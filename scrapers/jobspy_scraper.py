@@ -35,13 +35,13 @@ def scrape_jobspy(
         try:
             log.info(f"[JobSpy] Searching: '{term}' @ {location}")
             df = scrape_jobs(
-                site_name=["indeed", "linkedin", "naukri"],
+                site_name=["indeed", "linkedin"],
                 search_term=term,
                 location=location,
                 results_wanted=results_per_term,
                 hours_old=hours_old,
                 country_indeed="India",
-                linkedin_fetch_description=True,
+                linkedin_fetch_description=False,
             )
 
             if df is None or df.empty:
@@ -62,8 +62,7 @@ def scrape_jobspy(
         except Exception as e:
             log.error(f"[JobSpy] Failed for '{term}': {type(e).__name__}: {e}")
 
-        # Random delay between search terms to avoid rate limiting
-        sleep_time = random.uniform(5.0, 10.0)
+        sleep_time = random.uniform(2.0, 4.0)
         log.debug(f"[JobSpy] Sleeping {sleep_time:.1f}s before next term")
         time.sleep(sleep_time)
 

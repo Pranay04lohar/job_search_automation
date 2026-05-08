@@ -25,6 +25,8 @@ if config.ENABLE_HIRIST:
     from scrapers.hirist import scrape_hirist
 if config.ENABLE_INSTAHYRE:
     from scrapers.instahyre import scrape_instahyre
+if config.ENABLE_NAUKRI:
+    from scrapers.naukri import scrape_naukri
 
 
 def _setup_logging() -> None:
@@ -99,10 +101,10 @@ def run_pipeline() -> None:
                 platform = str(r.get("site", "indeed")).lower()
                 raw_tagged.append((platform, r))
                 jobspy_total += 1
-            time.sleep(random.uniform(5.0, 10.0))
+            time.sleep(random.uniform(3.0, 5.0))
         log.info(f"[Scrape] JobSpy: {jobspy_total} raw jobs (deduplicated across locations)")
 
-        time.sleep(random.uniform(10.0, 20.0))
+        time.sleep(random.uniform(3.0, 5.0))
 
         # Wellfound
         if config.ENABLE_WELLFOUND:
@@ -111,7 +113,7 @@ def run_pipeline() -> None:
             for r in wf_results:
                 raw_tagged.append(("wellfound", r))
             log.info(f"[Scrape] Wellfound: {len(wf_results)} raw jobs")
-            time.sleep(random.uniform(10.0, 20.0))
+            time.sleep(random.uniform(3.0, 5.0))
 
         # Hirist
         if config.ENABLE_HIRIST:
@@ -120,7 +122,7 @@ def run_pipeline() -> None:
             for r in hirist_results:
                 raw_tagged.append(("hirist", r))
             log.info(f"[Scrape] Hirist: {len(hirist_results)} raw jobs")
-            time.sleep(random.uniform(10.0, 20.0))
+            time.sleep(random.uniform(3.0, 5.0))
 
         # Instahyre
         if config.ENABLE_INSTAHYRE:
@@ -129,6 +131,31 @@ def run_pipeline() -> None:
             for r in ih_results:
                 raw_tagged.append(("instahyre", r))
             log.info(f"[Scrape] Instahyre: {len(ih_results)} raw jobs")
+            time.sleep(random.uniform(3.0, 5.0))
+
+        # Naukri direct API
+        if config.ENABLE_NAUKRI:
+            log.info(f"[Scrape] Starting Naukri across {len(config.LOCATIONS)} locations...")
+            naukri_total = 0
+            seen_naukri_ids: set[str] = set()
+            for location in config.LOCATIONS:
+                log.info(f"[Scrape] Naukri → {location}")
+                nk_results = scrape_naukri(
+                    config.SEARCH_TERMS,
+                    location=location,
+                    hours_old=config.HOURS_OLD,
+                    results_per_term=config.RESULTS_PER_TERM,
+                )
+                for r in nk_results:
+                    job_id = str(r.get("jobId", "") or "")
+                    if job_id and job_id in seen_naukri_ids:
+                        continue
+                    if job_id:
+                        seen_naukri_ids.add(job_id)
+                    raw_tagged.append(("naukri_api", r))
+                    naukri_total += 1
+                time.sleep(random.uniform(3.0, 5.0))
+            log.info(f"[Scrape] Naukri: {naukri_total} raw jobs (deduplicated)")
 
         total_raw = len(raw_tagged)
         log.info(f"[Scrape] Total raw jobs collected: {total_raw}")

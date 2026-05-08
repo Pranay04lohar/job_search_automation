@@ -13,70 +13,63 @@ TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 # ── OpenRouter (OpenAI-compatible) ─────────────────────────────────────────────
 # https://openrouter.ai/docs
 OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
-# Default model for LLM scoring (you requested this one)
-OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "tencent/hy3-preview:free")
+# Free model for LLM scoring.
+# tencent/hy3-preview:free consistently returns null content — unusable.
+# google/gemma-3-27b-it:free gives reliable JSON output on this prompt size.
+OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
 
 # ── Healthcheck (optional — e.g. healthchecks.io) ─────────────────────────────
 HEALTHCHECK_URL: str = os.getenv("HEALTHCHECK_URL", "")
 
 # ── Search Configuration ───────────────────────────────────────────────────────
 
-# All cities you're open to — jobspy is called once per location
+# Two locations cover everything: primary city + pan-India/remote
 LOCATIONS: list[str] = [
-    "Bengaluru, India",
-    "Hyderabad, India",
-    "Pune, India",
-    "Noida, India",
-    "Gurgaon, India",
-    "Mumbai, India",
-    "India",          # catches remote/pan-India listings
+    "Bengaluru, India",   # primary city; LinkedIn/Indeed return BLR-specific results
+    "India",              # catches Hyd/Pune/Noida/Gurgaon/Mumbai/remote in one call
 ]
 
 SEARCH_TERMS: list[str] = [
-    # ML / AI
-    "machine learning engineer",
-    "AI engineer",
-    "ML engineer fresher",
-    "AI ML intern",
-    # LLM / GenAI
+    # LLM / GenAI (highest priority)
     "LLM engineer",
     "generative AI engineer",
-    "AI agent developer",
-    # NLP
+    # ML / AI
+    "machine learning engineer",
+    "AI engineer intern",
+    # NLP / MLOps
     "NLP engineer",
-    # Backend-AI (Python)
-    "Python developer AI",
-    "SDE Python machine learning",
-    # MLOps / AI infra
     "MLOps engineer",
-    "AI infrastructure engineer",
-    # Research
-    "AI research intern",
-    "ML research engineer fresher",
+    # Python / Full Stack
+    "Python developer machine learning",
+    "full stack developer AI",
 ]
 
 HOURS_OLD: int = 24            # Only jobs from last 24 hours
-RESULTS_PER_TERM: int = 20     # Per platform per search term per location
+RESULTS_PER_TERM: int = 15     # Per platform per search term per location
 
 # ── Title-based Exclude Filter ─────────────────────────────────────────────────
 # Jobs whose title contains any of these (case-insensitive) are dropped early.
 EXCLUDED_TITLE_KEYWORDS: list[str] = [
-    # Senior / management roles (5+ yrs)
+    # Senior / management roles
     "senior ", "lead ", "principal ", "staff engineer", "engineering manager",
-    "head of", " vp ", "chief ", "director",
+    "head of", " vp ", "chief ", "director", "manager",
+    # Experience requirements in title (4+ years)
+    "4+ year", "5+ year", "6+ year", "7+ year", "8+ year", "9+ year",
+    "10+ year", "4 year", "5 year", "6 year", "7 year", "8 year",
+    "(4+", "(5+", "(6+", "(7+", "(8+", "(9+", "(10+",
     # Frontend-only
     "frontend", "front-end", "front end", "react developer",
     "angular developer", "vue developer", "ui developer", "ux engineer",
     # Pure DevOps / Cloud (no AI)
     "devops engineer", "site reliability engineer", "sre engineer",
-    "cloud engineer", "infrastructure engineer",
+    "cloud engineer", "infrastructure engineer", "platform engineer",
     # Unrelated
     "data engineer", "etl developer", "ios developer", "android developer",
-    "sales engineer", "marketing",
+    "sales engineer", "marketing", "business analyst", "scrum master",
 ]
 
 # ── Scoring Thresholds ─────────────────────────────────────────────────────────
-KEYWORD_MIN_HITS: int = 2         # Discard jobs with fewer keyword matches
+KEYWORD_MIN_HITS: int = 1         # Discard jobs with no relevant keywords at all
 SEMANTIC_THRESHOLD: float = 0.33  # Tier 2: keep jobs above this similarity
 LLM_THRESHOLD: float = 0.40       # Tier 3: only LLM-score above this composite
 LLM_ALERT_THRESHOLD: int = 50     # Alert if LLM score >= this (lower = more alerts)
@@ -141,6 +134,11 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 ENABLE_WELLFOUND: bool = True
 ENABLE_HIRIST: bool = True
 ENABLE_INSTAHYRE: bool = True
+# Naukri direct API scraper (no Selenium/cookies required; uses internal JSON API).
+# Set True once you've confirmed it works for your account region.
+# For better results, export your Naukri session cookies to
+# cookies/naukri_cookies.txt (Netscape format) or cookies/naukri_cookies.json
+ENABLE_NAUKRI: bool = True
 ENABLE_LLM_SCORING: bool = True       # Set False to disable LLM calls (cost = $0)
 ENABLE_TELEGRAM_ALERTS: bool = True
 SEND_DAILY_SUMMARY: bool = True

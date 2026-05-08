@@ -149,7 +149,8 @@ class JobSpyNormalizer:
 
             title = str(raw.get("title", "")).strip()
             company = str(raw.get("company", "")).strip()
-            if not title or not company:
+            # JobSpy uses pandas; NaN serialises to the string "nan" — reject those
+            if not title or not company or company.lower() == "nan" or title.lower() == "nan":
                 return None
 
             location_parts = [
@@ -306,27 +307,63 @@ class WellfoundNormalizer:
 
 
 class HiristNormalizer:
-    """Normalizes raw dicts from Hirist.tech JSON API."""
+    """
+    Normalizes raw dicts from Hirist.com.
+
+    Handles two API shapes:
+      - jobseeker-api.hirist.com/v2/jobfeed  (category feed, new endpoint)
+        Fields: companyData.companyName, title, min/max (years), location[{name}]
+      - legacy hirist.tech/api/job/search
+        Fields: designation, company_name, job_description, etc.
+    """
 
     def normalize(self, raw: dict) -> Optional[Job]:
         try:
-            ext_id = str(raw.get("job_id") or raw.get("id") or "").strip()
-            title = str(raw.get("designation") or raw.get("title") or "").strip()
-            company = str(raw.get("company_name") or raw.get("company") or "").strip()
+            # --- ID ---
+            ext_id = str(
+                raw.get("jobId") or raw.get("job_id") or raw.get("id") or ""
+            ).strip()
+
+            # --- Title ---
+            title = str(raw.get("title") or raw.get("designation") or "").strip()
+
+            # --- Company: new API nests it under companyData ---
+            company_data = raw.get("companyData") or {}
+            company = str(
+                company_data.get("companyName")
+                or raw.get("company_name")
+                or raw.get("company")
+                or ""
+            ).strip()
 
             if not title or not company:
                 return None
 
-            location = str(raw.get("location") or raw.get("city") or "").strip()
-            is_remote = "remote" in location.lower() or bool(raw.get("is_remote", False))
+            # --- Location: new API returns a list of {name: "..."} dicts ---
+            loc_raw = raw.get("location") or raw.get("city") or ""
+            if isinstance(loc_raw, list):
+                location = ", ".join(
+                    str(loc.get("name", "")) for loc in loc_raw if loc.get("name")
+                )
+            else:
+                location = str(loc_raw).strip()
 
+            is_remote = (
+                "remote" in location.lower()
+                or bool(raw.get("workFromHome", False))
+                or bool(raw.get("is_remote", False))
+            )
+
+            # --- Description: not provided by category feed; use empty string ---
             description = str(raw.get("job_description") or raw.get("description") or "")
             description_clean = clean_description(description)
 
+            # --- Apply URL ---
             apply_url = str(raw.get("apply_url") or raw.get("job_url") or "")
             if not apply_url and ext_id:
-                apply_url = f"https://www.hirist.tech/j/{ext_id}"
+                apply_url = f"https://www.hirist.com/j/{ext_id}"
 
+            # --- Posted date ---
             posted_at = None
             raw_date = raw.get("posted_on") or raw.get("posted_at")
             if raw_date:
@@ -335,9 +372,11 @@ class HiristNormalizer:
                 except Exception:
                     pass
 
+            # --- Salary ---
             salary_str = raw.get("salary") or raw.get("ctc") or ""
             salary_min, salary_max = parse_salary_inr(str(salary_str))
 
+            # --- Skills ---
             skills_raw = raw.get("skills") or raw.get("key_skills") or []
             if isinstance(skills_raw, list):
                 skills = [str(s).strip() for s in skills_raw if s]
@@ -346,10 +385,19 @@ class HiristNormalizer:
             else:
                 skills = []
 
-            exp_str = str(raw.get("experience") or raw.get("min_exp") or "")
-            exp_min, exp_max = _parse_experience(exp_str)
+            # --- Experience: new API gives min/max years as integers ---
+            exp_min_raw = raw.get("min") if "min" in raw else raw.get("experience")
+            exp_max_raw = raw.get("max") if "max" in raw else None
+            if isinstance(exp_min_raw, (int, float)) or isinstance(exp_max_raw, (int, float)):
+                try:
+                    exp_min = int(exp_min_raw) if exp_min_raw is not None else None
+                    exp_max = int(exp_max_raw) if exp_max_raw is not None else exp_min
+                except Exception:
+                    exp_min, exp_max = None, None
+            else:
+                exp_min, exp_max = _parse_experience(str(exp_min_raw or ""))
 
-            emp_type = _parse_employment_type(str(raw.get("job_type") or ""))
+            emp_type = _parse_employment_type(str(raw.get("job_type") or raw.get("jobType") or ""))
             content_hash = compute_content_hash(title, company)
 
             return Job(
@@ -375,6 +423,90 @@ class HiristNormalizer:
             )
         except Exception as e:
             log.error(f"[HiristNormalizer] Failed: {e}")
+            return None
+
+
+class NaukriNormalizer:
+    """Normalizes raw dicts from the Naukri.com internal JSON API."""
+
+    def normalize(self, raw: dict) -> Optional[Job]:
+        try:
+            ext_id = str(raw.get("jobId", "") or "").strip()
+            title = str(raw.get("title", "") or "").strip()
+            company = str(raw.get("companyName", "") or raw.get("company", "") or "").strip()
+
+            if not title or not company:
+                return None
+
+            # Placeholders hold experience / salary / location as typed entries
+            placeholders: list[dict] = raw.get("placeholders") or []
+            experience_label = ""
+            salary_label = ""
+            location = ""
+            for ph in placeholders:
+                ph_type = str(ph.get("type", "")).lower()
+                ph_label = str(ph.get("label", ""))
+                if ph_type == "experience":
+                    experience_label = ph_label
+                elif ph_type == "salary":
+                    salary_label = ph_label
+                elif ph_type == "location":
+                    location = ph_label
+
+            is_remote = "remote" in location.lower() or bool(raw.get("isWork_from_home", False))
+
+            description = str(raw.get("jobDescription", "") or "")
+            description_clean = clean_description(description)
+
+            # Build apply URL from jdURL (relative path) or construct from jobId
+            jd_url = str(raw.get("jdURL", "") or "")
+            if jd_url:
+                apply_url = f"https://www.naukri.com{jd_url}" if jd_url.startswith("/") else jd_url
+            elif ext_id:
+                apply_url = f"https://www.naukri.com/job-listings-{ext_id}"
+            else:
+                apply_url = ""
+
+            # posted date: Naukri sometimes returns footerPlaceholderLabel like "3 days ago"
+            posted_at = None
+            footer = str(raw.get("footerPlaceholderLabel", "") or "")
+            if "today" in footer.lower():
+                from datetime import date as _date
+                posted_at = datetime.combine(_date.today(), datetime.min.time())
+
+            salary_min, salary_max = parse_salary_inr(salary_label)
+
+            # Skills: comma-separated string in tagsAndSkills
+            tags_raw = str(raw.get("tagsAndSkills", "") or "")
+            skills = [s.strip() for s in tags_raw.split(",") if s.strip()] if tags_raw else []
+
+            exp_min, exp_max = _parse_experience(experience_label)
+            emp_type = _parse_employment_type(str(raw.get("jobType", "") or ""))
+            content_hash = compute_content_hash(title, company)
+
+            return Job(
+                id=f"naukri_api:{ext_id}" if ext_id else f"naukri_api:{content_hash}",
+                title=title,
+                company=company,
+                location=location,
+                is_remote=is_remote,
+                employment_type=emp_type,
+                description=description,
+                description_clean=description_clean,
+                apply_url=apply_url,
+                posted_at=posted_at,
+                scraped_at=datetime.utcnow(),
+                platform="naukri",
+                salary_min=salary_min,
+                salary_max=salary_max,
+                skills=skills,
+                experience_min=exp_min,
+                experience_max=exp_max,
+                content_hash=content_hash,
+                raw=raw,
+            )
+        except Exception as e:
+            log.error(f"[NaukriNormalizer] Failed: {e}")
             return None
 
 
@@ -476,7 +608,8 @@ _NORMALIZERS = {
     "jobspy": JobSpyNormalizer(),
     "linkedin": JobSpyNormalizer(),
     "indeed": JobSpyNormalizer(),
-    "naukri": JobSpyNormalizer(),
+    "naukri": JobSpyNormalizer(),      # from python-jobspy
+    "naukri_api": NaukriNormalizer(),  # from our direct API scraper
     "glassdoor": JobSpyNormalizer(),
     "wellfound": WellfoundNormalizer(),
     "hirist": HiristNormalizer(),

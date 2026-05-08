@@ -17,10 +17,18 @@ log = logging.getLogger(__name__)
 # ── Tier 1: Keyword Pre-filter ─────────────────────────────────────────────────
 
 REQUIRED_KEYWORDS: list[str] = [
-    "python", "machine learning", "ml", "ai", "llm", "nlp", "deep learning",
-    "data science", "artificial intelligence", "language model", "neural",
+    # Core AI/ML — all common abbreviations and spellings included
+    "python", "machine learning", "ml engineer", "ai engineer", "ai developer",
+    "llm", "nlp", "deep learning", "data science", "artificial intelligence",
+    "language model", "neural", "gen ai", "genai", "generative ai",
+    "generative artificial", "large language",
+    # Frameworks / tools
     "fastapi", "langchain", "rag", "vector", "embedding", "transformer",
-    "automation", "backend", "api", "aws", "cloud", "intern", "fresher",
+    "hugging face", "huggingface", "pytorch", "tensorflow", "scikit",
+    # General engineering (keeps python dev / fullstack AI jobs)
+    "automation", "backend", "api", "aws", "cloud",
+    # Experience level markers
+    "intern", "fresher", "entry level", "junior", "graduate",
 ]
 
 
@@ -48,7 +56,15 @@ class SemanticMatcher:
 
         self._np = np
         log.info("[Scorer] Loading sentence-transformers model all-MiniLM-L6-v2...")
-        self._model = SentenceTransformer("all-MiniLM-L6-v2")
+        # Use cached model if available; skip HuggingFace Hub version-check network calls.
+        # On first run this downloads the model; subsequent runs load from disk instantly.
+        try:
+            self._model = SentenceTransformer(
+                "all-MiniLM-L6-v2", local_files_only=True
+            )
+        except Exception:
+            log.info("[Scorer] Model not cached yet — downloading from HuggingFace...")
+            self._model = SentenceTransformer("all-MiniLM-L6-v2")
         self.resume_embedding = self._model.encode(
             resume_text, normalize_embeddings=True, show_progress_bar=False
         )
@@ -211,14 +227,23 @@ def _openrouter_chat_completion(
     except ImportError as e:
         raise ImportError("httpx is not installed. Run: pip install httpx") from e
 
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        # Optional but recommended by OpenRouter for attribution/analytics
-        "HTTP-Referer": "https://localhost",
-        "X-Title": "job_search_automation",
-    }
+    # Supports OpenRouter (default) or Groq (set GROQ_API_KEY + model like llama-3.3-70b-versatile)
+    import os as _os
+    groq_key = _os.getenv("GROQ_API_KEY", "")
+    if groq_key:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {groq_key}",
+            "Content-Type": "application/json",
+        }
+    else:
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://localhost",
+            "X-Title": "job_search_automation",
+        }
     payload = {
         "model": model,
         "messages": [
@@ -229,9 +254,19 @@ def _openrouter_chat_completion(
         "temperature": 0.2,
     }
 
+    import time as _time
     with httpx.Client(timeout=45) as client:
-        resp = client.post(url, headers=headers, json=payload)
-        resp.raise_for_status()
+        for attempt in range(3):
+            resp = client.post(url, headers=headers, json=payload)
+            if resp.status_code == 429:
+                wait = 12 * (attempt + 1)   # 12s, 24s, 36s
+                log.warning(f"[LLM] OpenRouter 429 rate limit — waiting {wait}s (attempt {attempt+1}/3)...")
+                _time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            break
+        else:
+            raise RuntimeError("OpenRouter 429 rate limit after 3 retries.")
         data = resp.json()
 
     try:
@@ -315,7 +350,25 @@ def run_scoring_pipeline(
     )
 
     if not llm_candidates:
-        return [j for j, _ in candidates]
+        # No jobs strong enough for LLM — apply fallback threshold so we don't
+        # alert on weak semantic matches that happen to be the "best of a bad batch"
+        fallback = [
+            j for j, comp in candidates
+            if comp >= config.FALLBACK_COMPOSITE_THRESHOLD
+        ][:config.FALLBACK_MAX_ALERTS]
+        if fallback:
+            for j in fallback:
+                j.llm_one_liner = j.llm_one_liner or "Matched by semantic similarity"
+            log.info(
+                f"[LLM] No LLM candidates (all below composite {llm_threshold}) "
+                f"— returning {len(fallback)} semantic picks above fallback threshold "
+                f"{config.FALLBACK_COMPOSITE_THRESHOLD}"
+            )
+        else:
+            log.info(
+                "[LLM] No candidates above fallback threshold either — no alerts this run."
+            )
+        return fallback
 
     if not config.OPENROUTER_API_KEY:
         log.error("[LLM] OPENROUTER_API_KEY is missing. Set it in .env to enable LLM scoring.")

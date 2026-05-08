@@ -120,12 +120,19 @@ def scrape_wellfound(
                 timeout=30,
             )
 
-            if response.status_code in (403, 429):
-                sleep_time = random.uniform(60, 120)
-                log.warning(
-                    f"[Wellfound] Rate limited ({response.status_code}). "
-                    f"Sleeping {sleep_time:.0f}s, retrying..."
+            if response.status_code == 403:
+                # 403 = auth failure — cookies are expired or invalid.
+                # Retrying won't help; abort entire scraper to save time.
+                log.error(
+                    "[Wellfound] 403 Forbidden — session cookies are expired or invalid. "
+                    "Re-export your Wellfound cookies and save to "
+                    "cookies/wellfound_cookies.txt, then retry."
                 )
+                return all_jobs
+
+            if response.status_code == 429:
+                sleep_time = random.uniform(30, 60)
+                log.warning(f"[Wellfound] Rate limited (429). Sleeping {sleep_time:.0f}s, retrying...")
                 time.sleep(sleep_time)
                 response = cffi_requests.post(
                     WELLFOUND_GQL_ENDPOINT,
@@ -135,8 +142,8 @@ def scrape_wellfound(
                     impersonate="chrome124",
                     timeout=30,
                 )
-                if response.status_code in (403, 429):
-                    log.error(f"[Wellfound] Auth failed for '{term}' after retry")
+                if response.status_code != 200:
+                    log.error(f"[Wellfound] Still blocked after retry for '{term}'. Skipping.")
                     continue
 
             data = response.json()

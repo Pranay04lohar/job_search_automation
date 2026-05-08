@@ -12,7 +12,11 @@ from scrapers.cookie_loader import load_cookies_first_existing
 
 log = logging.getLogger(__name__)
 
+# v1 endpoint returns 404 as of May 2026 — try v2 variant
 INSTAHYRE_SEARCH_URL = (
+    "https://www.instahyre.com/api/v2/opportunity/?format=json&q={term}&page={page}"
+)
+_INSTAHYRE_FALLBACK_URL = (
     "https://www.instahyre.com/api/v1/opportunity/?format=json&q={term}&page={page}"
 )
 MAX_PAGES = 3
@@ -68,6 +72,9 @@ def scrape_instahyre(search_terms: list[str]) -> list[dict[str, Any]]:
     all_jobs: list[dict] = []
     seen_ids: set[str] = set()
 
+    # Detect working base URL on first request (v2 preferred, v1 fallback)
+    active_url_template: str = INSTAHYRE_SEARCH_URL
+
     with httpx.Client(
         headers=STEALTH_HEADERS,
         cookies=cookies,
@@ -77,9 +84,28 @@ def scrape_instahyre(search_terms: list[str]) -> list[dict[str, Any]]:
         for term in search_terms:
             try:
                 for page in range(1, MAX_PAGES + 1):
-                    url = INSTAHYRE_SEARCH_URL.format(term=term, page=page)
-
+                    url = active_url_template.format(term=term, page=page)
                     response = client.get(url)
+
+                    # v2 returned 404 — try v1 once, abort entire scraper if that also fails
+                    if response.status_code == 404:
+                        if active_url_template == INSTAHYRE_SEARCH_URL:
+                            fb = _INSTAHYRE_FALLBACK_URL.format(term=term, page=page)
+                            log.debug("[Instahyre] v2 404 — probing v1 fallback...")
+                            r2 = client.get(fb)
+                            if r2.status_code == 200:
+                                active_url_template = _INSTAHYRE_FALLBACK_URL
+                                log.info("[Instahyre] v1 endpoint works — switching.")
+                                response = r2
+                            else:
+                                log.warning(
+                                    "[Instahyre] Both v1 and v2 return 404. "
+                                    "API endpoint has changed — disabling for this run."
+                                )
+                                return all_jobs
+                        else:
+                            log.warning("[Instahyre] 404 — aborting.")
+                            return all_jobs
 
                     if response.status_code in (401, 403):
                         log.warning(
