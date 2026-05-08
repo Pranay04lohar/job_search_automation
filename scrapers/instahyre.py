@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import config
+from scrapers.cookie_loader import load_cookies_first_existing
 
 log = logging.getLogger(__name__)
 
@@ -30,24 +31,21 @@ STEALTH_HEADERS = {
 
 
 def _load_cookies() -> dict[str, str]:
-    """Load cookies from cookies/instahyre_cookies.json."""
-    cookie_path = Path(config.COOKIES_DIR) / "instahyre_cookies.json"
-    if not cookie_path.exists():
+    """Load cookies from cookies/instahyre_cookies.(json|txt)."""
+    cookie_paths = [
+        Path(config.COOKIES_DIR) / "instahyre_cookies.json",
+        Path(config.COOKIES_DIR) / "instahyre_cookies.txt",
+        Path(config.COOKIES_DIR) / "instahyre_cookies.cookies",
+    ]
+    cookies = load_cookies_first_existing(cookie_paths)
+    if not cookies:
+        cookie_path = cookie_paths[0]
         log.warning(
             f"[Instahyre] Cookie file not found at {cookie_path}. "
-            "Export cookies manually to enable Instahyre scraping."
+            "Export cookies and save to cookies/instahyre_cookies.json (or .txt for Netscape format)."
         )
         return {}
-    try:
-        with open(cookie_path) as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return {c["name"]: c["value"] for c in data if "name" in c}
-        if isinstance(data, dict):
-            return data
-    except Exception as e:
-        log.warning(f"[Instahyre] Failed to load cookies: {e}")
-    return {}
+    return cookies
 
 
 def scrape_instahyre(search_terms: list[str]) -> list[dict[str, Any]]:

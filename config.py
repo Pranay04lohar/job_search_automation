@@ -10,33 +10,81 @@ load_dotenv()
 TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID: str = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# ── Anthropic ──────────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+# ── OpenRouter (OpenAI-compatible) ─────────────────────────────────────────────
+# https://openrouter.ai/docs
+OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+# Default model for LLM scoring (you requested this one)
+OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", "tencent/hy3-preview:free")
 
 # ── Healthcheck (optional — e.g. healthchecks.io) ─────────────────────────────
 HEALTHCHECK_URL: str = os.getenv("HEALTHCHECK_URL", "")
 
 # ── Search Configuration ───────────────────────────────────────────────────────
-SEARCH_TERMS: list[str] = [
-    "machine learning engineer",
-    "LLM engineer",
-    "AI engineer intern",
-    "NLP engineer",
-    "generative AI engineer",
-    "ML engineer fresher",
-    "AI ML intern",
+
+# All cities you're open to — jobspy is called once per location
+LOCATIONS: list[str] = [
+    "Bengaluru, India",
+    "Hyderabad, India",
+    "Pune, India",
+    "Noida, India",
+    "Gurgaon, India",
+    "Mumbai, India",
+    "India",          # catches remote/pan-India listings
 ]
 
-LOCATION: str = "Bengaluru, India"
-HOURS_OLD: int = 168           # Only jobs from last 7 days
-RESULTS_PER_TERM: int = 50     # Per platform per search term
+SEARCH_TERMS: list[str] = [
+    # ML / AI
+    "machine learning engineer",
+    "AI engineer",
+    "ML engineer fresher",
+    "AI ML intern",
+    # LLM / GenAI
+    "LLM engineer",
+    "generative AI engineer",
+    "AI agent developer",
+    # NLP
+    "NLP engineer",
+    # Backend-AI (Python)
+    "Python developer AI",
+    "SDE Python machine learning",
+    # MLOps / AI infra
+    "MLOps engineer",
+    "AI infrastructure engineer",
+    # Research
+    "AI research intern",
+    "ML research engineer fresher",
+]
+
+HOURS_OLD: int = 24            # Only jobs from last 24 hours
+RESULTS_PER_TERM: int = 20     # Per platform per search term per location
+
+# ── Title-based Exclude Filter ─────────────────────────────────────────────────
+# Jobs whose title contains any of these (case-insensitive) are dropped early.
+EXCLUDED_TITLE_KEYWORDS: list[str] = [
+    # Senior / management roles (5+ yrs)
+    "senior ", "lead ", "principal ", "staff engineer", "engineering manager",
+    "head of", " vp ", "chief ", "director",
+    # Frontend-only
+    "frontend", "front-end", "front end", "react developer",
+    "angular developer", "vue developer", "ui developer", "ux engineer",
+    # Pure DevOps / Cloud (no AI)
+    "devops engineer", "site reliability engineer", "sre engineer",
+    "cloud engineer", "infrastructure engineer",
+    # Unrelated
+    "data engineer", "etl developer", "ios developer", "android developer",
+    "sales engineer", "marketing",
+]
 
 # ── Scoring Thresholds ─────────────────────────────────────────────────────────
-KEYWORD_MIN_HITS: int = 2       # Discard jobs with fewer keyword matches
-SEMANTIC_THRESHOLD: float = 0.38  # Discard jobs below this semantic similarity
-LLM_THRESHOLD: float = 0.45    # Only LLM-score jobs above this composite score
-LLM_ALERT_THRESHOLD: int = 62   # Only alert if LLM score >= this
-MAX_LLM_CALLS_PER_RUN: int = 25  # Cost guard
+KEYWORD_MIN_HITS: int = 2         # Discard jobs with fewer keyword matches
+SEMANTIC_THRESHOLD: float = 0.33  # Tier 2: keep jobs above this similarity
+LLM_THRESHOLD: float = 0.40       # Tier 3: only LLM-score above this composite
+LLM_ALERT_THRESHOLD: int = 50     # Alert if LLM score >= this (lower = more alerts)
+MAX_LLM_CALLS_PER_RUN: int = 35   # Cost guard
+
+# Fallback: when LLM produces 0 alerts, alert top N semantic candidates instead
+FALLBACK_COMPOSITE_THRESHOLD: float = 0.42
+FALLBACK_MAX_ALERTS: int = 20
 
 # ── Resume Data ────────────────────────────────────────────────────────────────
 RESUME_TEXT: str = """

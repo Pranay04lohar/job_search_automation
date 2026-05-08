@@ -78,18 +78,29 @@ def run_pipeline() -> None:
         # ── Scrape all platforms ────────────────────────────────────────────────
         raw_tagged: list[tuple[str, dict]] = []
 
-        # JobSpy (LinkedIn + Indeed + Naukri)
-        log.info("[Scrape] Starting JobSpy (LinkedIn + Indeed + Naukri)...")
-        jobspy_results = scrape_jobspy(
-            config.SEARCH_TERMS,
-            config.LOCATION,
-            hours_old=config.HOURS_OLD,
-            results_per_term=config.RESULTS_PER_TERM,
-        )
-        for r in jobspy_results:
-            platform = str(r.get("site", "indeed")).lower()
-            raw_tagged.append((platform, r))
-        log.info(f"[Scrape] JobSpy: {len(jobspy_results)} raw jobs")
+        # JobSpy (LinkedIn + Indeed + Naukri) — once per location
+        log.info(f"[Scrape] Starting JobSpy across {len(config.LOCATIONS)} locations...")
+        jobspy_total = 0
+        seen_jobspy_urls: set[str] = set()
+        for location in config.LOCATIONS:
+            log.info(f"[Scrape] JobSpy → {location}")
+            loc_results = scrape_jobspy(
+                config.SEARCH_TERMS,
+                location,
+                hours_old=config.HOURS_OLD,
+                results_per_term=config.RESULTS_PER_TERM,
+            )
+            for r in loc_results:
+                url = str(r.get("job_url") or r.get("apply_url") or "")
+                if url and url in seen_jobspy_urls:
+                    continue
+                if url:
+                    seen_jobspy_urls.add(url)
+                platform = str(r.get("site", "indeed")).lower()
+                raw_tagged.append((platform, r))
+                jobspy_total += 1
+            time.sleep(random.uniform(5.0, 10.0))
+        log.info(f"[Scrape] JobSpy: {jobspy_total} raw jobs (deduplicated across locations)")
 
         time.sleep(random.uniform(10.0, 20.0))
 
@@ -125,6 +136,21 @@ def run_pipeline() -> None:
         # ── Normalize ──────────────────────────────────────────────────────────
         jobs = normalize_all(raw_tagged)
         log.info(f"[Normalize] {len(jobs)} jobs normalized from {total_raw} raw")
+
+        # ── Title filter — drop excluded role types ─────────────────────────
+        if config.EXCLUDED_TITLE_KEYWORDS:
+            before = len(jobs)
+            jobs = [
+                j for j in jobs
+                if not any(
+                    kw in j.title.lower()
+                    for kw in config.EXCLUDED_TITLE_KEYWORDS
+                )
+            ]
+            log.info(
+                f"[Filter] Title filter dropped {before - len(jobs)} jobs "
+                f"({len(jobs)} remaining)"
+            )
 
         # ── Deduplicate & store ────────────────────────────────────────────────
         new_jobs = filter_new_jobs(jobs)

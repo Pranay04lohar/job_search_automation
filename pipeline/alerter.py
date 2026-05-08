@@ -50,7 +50,11 @@ def _format_salary(job: Job) -> str:
 def _format_posted_date(dt: Optional[datetime]) -> str:
     if not dt:
         return "Unknown"
-    return dt.strftime("%b %-d") if hasattr(dt, "strftime") else str(dt)[:10]
+    try:
+        # %-d is Linux-only and crashes on Windows; build cross-platform date string
+        return f"{dt.strftime('%b')} {dt.day}"
+    except Exception:
+        return str(dt)[:10]
 
 
 class TelegramAlerter:
@@ -77,8 +81,12 @@ class TelegramAlerter:
         Send a formatted job alert message with inline keyboard.
         Returns True on success, False on failure.
         """
-        score = job.llm_score or 0
-        one_liner = job.llm_one_liner or ""
+        # Use LLM score when available; fall back to semantic composite × 100
+        is_semantic_fallback = not job.llm_score and (
+            not job.llm_one_liner or job.llm_one_liner in ("LLM error", "Matched by semantic similarity")
+        )
+        score = job.llm_score if job.llm_score else round((job.match_score or 0) * 100)
+        one_liner = "" if is_semantic_fallback else (job.llm_one_liner or "")
         platform_tag = job.platform.capitalize()
         remote_badge = "🌐 Remote" if job.is_remote else f"📍 {job.location}"
 
@@ -160,38 +168,62 @@ class TelegramAlerter:
 
     def send_daily_summary(self, stats: dict) -> None:
         """
-        Send end-of-run summary with counts and top matches.
+        Send end-of-run summary with counts and top matches including apply links.
 
         Expected stats keys: total, this_week, alerted, applied, by_platform, top_jobs
         """
-        lines = ["📊 *Job Search Run Summary*", ""]
-        lines.append(f"Total in DB: *{stats.get('total', 0)}*")
-        lines.append(f"This week: *{stats.get('this_week', 0)}*")
-        lines.append(f"Alerts sent: *{stats.get('alerted', 0)}*")
-        lines.append(f"Applied: *{stats.get('applied', 0)}*")
+        total     = stats.get("total", 0)
+        this_week = stats.get("this_week", 0)
+        alerted   = stats.get("alerted", 0)
+        applied   = stats.get("applied", 0)
 
         by_platform = stats.get("by_platform", {})
-        if by_platform:
-            lines.append("")
-            lines.append("*Per platform:*")
-            for platform, count in by_platform.items():
-                lines.append(f"  • {platform.capitalize()}: {count}")
+        platform_str = "  ".join(
+            f"{p.capitalize()} {c}" for p, c in by_platform.items()
+        ) if by_platform else "—"
+
+        lines: list[str] = []
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("📊 *Job Search Run Summary*")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        lines.append(f"🗃  Total in DB:  *{total}*")
+        lines.append(f"📅  Last 7 days: *{this_week}*")
+        lines.append(f"🔔  Alerts sent: *{alerted}*")
+        lines.append(f"✅  Applied:     *{applied}*")
+        lines.append("")
+        lines.append(f"📌  Platforms: {platform_str}")
 
         top_jobs = stats.get("top_jobs", [])
         if top_jobs:
             lines.append("")
-            lines.append("*Top 3 matches:*")
-            for i, j in enumerate(top_jobs[:3], 1):
+            lines.append("🏆 *Top Matches:*")
+            lines.append("")
+            for i, j in enumerate(top_jobs, 1):
                 score_val = j.get("llm_score") or round((j.get("match_score") or 0) * 100)
-                lines.append(
-                    f"  {i}. {j.get('title', '?')} @ {j.get('company', '?')} "
-                    f"— {score_val}/100"
-                )
+                title   = j.get("title", "Unknown Role")
+                company = j.get("company", "Unknown Company")
+                url     = j.get("apply_url") or ""
+
+                bar_filled = round(score_val / 10)
+                bar = "🟩" * bar_filled + "⬜" * (10 - bar_filled)
+
+                if url:
+                    lines.append(f"*{i}. [{title}]({url})*")
+                else:
+                    lines.append(f"*{i}. {title}*")
+                lines.append(f"    🏢 {company}  |  {bar}  {score_val}/100")
+                if url:
+                    lines.append(f"    [Apply ↗]({url})")
+                lines.append("")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
 
         self._post("sendMessage", {
             "chat_id": self.chat_id,
             "text": "\n".join(lines),
             "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
         })
 
     def handle_callback(self, callback_data: str) -> None:

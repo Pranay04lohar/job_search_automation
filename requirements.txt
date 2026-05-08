@@ -1,9 +1,8 @@
-jobspy>=1.1.0
+python-jobspy>=1.1.0
 curl-cffi>=0.7.0
 playwright>=1.44.0
 playwright-stealth>=1.0.6
 sentence-transformers>=3.0.0
-anthropic>=0.30.0
 httpx>=0.27.0
 beautifulsoup4>=4.12.0
 lxml>=5.2.0

@@ -18,7 +18,8 @@ playwright install chromium
 
 # 3. Set up environment variables
 copy .env.example .env
-# Edit .env: add TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, ANTHROPIC_API_KEY
+# Edit .env: add TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OPENROUTER_API_KEY
+# Optional: set OPENROUTER_MODEL (default is tencent/hy3-preview:free)
 
 # 4. Initialise the database
 python db.py
@@ -55,13 +56,17 @@ Wellfound and Instahyre require session cookies. Export them with the [EditThisC
 
 ### Wellfound
 1. Log in at https://wellfound.com
-2. Open EditThisCookie → Export → copy JSON
-3. Save to `cookies/wellfound_cookies.json`
+2. Open your cookie exporter → Export
+3. Save either:
+   - JSON export → `cookies/wellfound_cookies.json`
+   - Netscape export (starts with `# Netscape HTTP Cookie File`) → `cookies/wellfound_cookies.txt`
 
 ### Instahyre
 1. Log in at https://www.instahyre.com
-2. Open EditThisCookie → Export → copy JSON
-3. Save to `cookies/instahyre_cookies.json`
+2. Open your cookie exporter → Export
+3. Save either:
+   - JSON export → `cookies/instahyre_cookies.json`
+   - Netscape export → `cookies/instahyre_cookies.txt`
 
 If cookie files are missing, those scrapers return `[]` gracefully — the pipeline continues with the other platforms.
 
@@ -167,8 +172,8 @@ To handle callbacks you need to run a webhook or polling loop (not included — 
 - LinkedIn often requires delays; the built-in per-term sleep usually helps
 
 ### LLM scoring not working
-- Check `ANTHROPIC_API_KEY` in `.env`
-- Verify with: `python -c "import anthropic; print(anthropic.__version__)"`
+- Check `OPENROUTER_API_KEY` in `.env`
+- Optional: set `OPENROUTER_MODEL` in `.env` (default: `tencent/hy3-preview:free`)
 
 ### Semantic model is slow on first run
 - `all-MiniLM-L6-v2` (~80 MB) is downloaded once to `~/.cache/huggingface`

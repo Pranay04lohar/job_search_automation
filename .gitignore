@@ -9,6 +9,8 @@
 
 # Cookies (never commit session cookies)
 cookies/*.json
+cookies/*.txt
+cookies/*.cookies
 
 # Logs
 logs/*.log

@@ -117,35 +117,21 @@ LLM_SYSTEM_PROMPT = (
 )
 
 LLM_USER_PROMPT = """
-CANDIDATE RESUME SUMMARY:
-{resume_summary}
+RESUME: {resume_summary}
 
-JOB POSTING:
-Title: {title}
-Company: {company}
-Location: {location}
-Employment Type: {employment_type}
-Description (truncated to 2000 chars):
+JOB: {title} at {company} ({location}, {employment_type})
 {description}
 
-Evaluate fit. Return JSON with exactly these fields:
-{{
-  "score": <integer 0-100>,
-  "verdict": "<apply|maybe|skip>",
-  "strengths": ["<max 3 specific strengths>"],
-  "gaps": ["<max 2 specific gaps>"],
-  "one_liner": "<single sentence summary>"
-}}
-"""
+Return ONLY this JSON (no markdown):
+{{"score":<0-100>,"verdict":"apply|maybe|skip","strengths":["s1","s2"],"gaps":["g1"],"one_liner":"one sentence"}}"""
 
 
 def llm_score_job(
     job: Job,
     resume_summary: str,
-    client: "anthropic.Anthropic",  # type: ignore[name-defined]  # noqa: F821
 ) -> dict:
     """
-    Call Claude Haiku to score a single job.
+    Call an OpenRouter model to score a single job.
     Returns a dict with keys: score, verdict, strengths, gaps, one_liner.
     On any error returns a safe default so the pipeline never crashes.
     """
@@ -161,22 +147,21 @@ def llm_score_job(
 
     try:
         prompt = LLM_USER_PROMPT.format(
-            resume_summary=resume_summary.strip(),
+            resume_summary=resume_summary.strip()[:600],
             title=job.title,
             company=job.company,
             location=job.location,
             employment_type=job.employment_type,
-            description=job.description_clean[:2000],
+            description=job.description_clean[:800],
         )
 
-        message = client.messages.create(
-            model="claude-haiku-4-5",
-            max_tokens=400,
+        raw_text = _openrouter_chat_completion(
+            api_key=config.OPENROUTER_API_KEY,
+            model=config.OPENROUTER_MODEL,
             system=LLM_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        raw_text = message.content[0].text.strip()
+            user=prompt,
+            max_tokens=250,
+        ).strip()
 
         # Strip accidental markdown code fences
         if raw_text.startswith("```"):
@@ -201,6 +186,67 @@ def llm_score_job(
     except Exception as e:
         log.error(f"[LLM] Scoring failed for '{job.title}' @ '{job.company}': {e}")
         return default
+
+
+# ── OpenRouter helper (OpenAI-compatible Chat Completions) ─────────────────────
+def _openrouter_chat_completion(
+    *,
+    api_key: str,
+    model: str,
+    system: str,
+    user: str,
+    max_tokens: int,
+) -> str:
+    """
+    Minimal OpenRouter call using OpenAI-compatible endpoint.
+    Returns assistant message content as a string.
+    """
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is missing in environment/.env")
+    if not model:
+        raise RuntimeError("OPENROUTER_MODEL is empty")
+
+    try:
+        import httpx  # type: ignore[import]
+    except ImportError as e:
+        raise ImportError("httpx is not installed. Run: pip install httpx") from e
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        # Optional but recommended by OpenRouter for attribution/analytics
+        "HTTP-Referer": "https://localhost",
+        "X-Title": "job_search_automation",
+    }
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+    }
+
+    with httpx.Client(timeout=45) as client:
+        resp = client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except Exception as e:
+        raise RuntimeError(f"Unexpected OpenRouter response shape: {data}") from e
+
+    if content is None:
+        # Free-tier models occasionally return null content (refusal / rate limit)
+        finish_reason = data.get("choices", [{}])[0].get("finish_reason", "unknown")
+        raise RuntimeError(
+            f"OpenRouter returned null content (finish_reason={finish_reason}). "
+            "Model may be rate-limiting or refusing the request."
+        )
+    return content
 
 
 # ── Full Pipeline ──────────────────────────────────────────────────────────────
@@ -271,20 +317,14 @@ def run_scoring_pipeline(
     if not llm_candidates:
         return [j for j, _ in candidates]
 
-    try:
-        import anthropic  # type: ignore[import]
-        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-    except ImportError:
-        log.error("[LLM] 'anthropic' not installed. Run: pip install anthropic")
-        return [j for j, _ in candidates]
-    except Exception as e:
-        log.error(f"[LLM] Failed to init Anthropic client: {e}")
+    if not config.OPENROUTER_API_KEY:
+        log.error("[LLM] OPENROUTER_API_KEY is missing. Set it in .env to enable LLM scoring.")
         return [j for j, _ in candidates]
 
     alerted_candidates: list[Job] = []
 
     for job, comp in llm_candidates:
-        result = llm_score_job(job, resume_summary, client)
+        result = llm_score_job(job, resume_summary)
 
         job.llm_score = result["score"]
         job.llm_verdict = result["verdict"]
@@ -315,4 +355,22 @@ def run_scoring_pipeline(
         f"[LLM] {len(llm_candidates)} scored, "
         f"{len(alerted_candidates)} above alert threshold {llm_alert_threshold}"
     )
+
+    # ── Semantic fallback ─────────────────────────────────────────────────────
+    # If LLM scoring produced zero alerts (e.g. free-tier model returned null
+    # for every call), fall back to top semantic candidates so you always get
+    # at least some alerts every run.
+    if not alerted_candidates:
+        log.warning(
+            "[LLM] No jobs passed LLM threshold — falling back to top semantic candidates."
+        )
+        fallback = [
+            j for j, comp in candidates
+            if comp >= config.FALLBACK_COMPOSITE_THRESHOLD
+        ][:config.FALLBACK_MAX_ALERTS]
+        for j in fallback:
+            j.llm_one_liner = j.llm_one_liner or "Matched by semantic similarity"
+        log.info(f"[LLM] Fallback: returning {len(fallback)} semantic top picks")
+        return fallback
+
     return alerted_candidates

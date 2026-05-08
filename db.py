@@ -3,8 +3,16 @@
 import json
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
+
+
+class _DateEncoder(json.JSONEncoder):
+    """Encode date/datetime objects as ISO strings so raw dicts are always serialisable."""
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
 
 import config
 from pipeline.models import Job
@@ -98,18 +106,18 @@ def _job_to_row(job: Job) -> dict:
         "salary_min": job.salary_min,
         "salary_max": job.salary_max,
         "salary_currency": job.salary_currency,
-        "skills": json.dumps(job.skills),
+        "skills": json.dumps(job.skills, cls=_DateEncoder),
         "experience_min": job.experience_min,
         "experience_max": job.experience_max,
         "match_score": job.match_score,
         "llm_score": job.llm_score,
         "llm_verdict": job.llm_verdict,
-        "llm_strengths": json.dumps(job.llm_strengths),
-        "llm_gaps": json.dumps(job.llm_gaps),
+        "llm_strengths": json.dumps(job.llm_strengths, cls=_DateEncoder),
+        "llm_gaps": json.dumps(job.llm_gaps, cls=_DateEncoder),
         "llm_one_liner": job.llm_one_liner,
         "alerted": int(job.alerted),
         "status": job.status,
-        "raw": json.dumps(job.raw),
+        "raw": json.dumps(job.raw, cls=_DateEncoder),
     }
 
 
@@ -311,10 +319,10 @@ def get_stats() -> dict:
 
         top_jobs = conn.execute(
             """
-            SELECT title, company, llm_score, match_score FROM jobs
-            WHERE llm_score IS NOT NULL
-            ORDER BY llm_score DESC
-            LIMIT 3
+            SELECT title, company, llm_score, match_score, apply_url FROM jobs
+            WHERE llm_score IS NOT NULL OR match_score IS NOT NULL
+            ORDER BY COALESCE(llm_score, 0) DESC, match_score DESC
+            LIMIT 5
             """
         ).fetchall()
         top = [dict(r) for r in top_jobs]
