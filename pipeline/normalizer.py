@@ -456,6 +456,17 @@ class NaukriNormalizer:
             is_remote = "remote" in location.lower() or bool(raw.get("isWork_from_home", False))
 
             description = str(raw.get("jobDescription", "") or "")
+
+            # Playwright DOM scraper only gets card text — build a synthetic description
+            # from title + skills so the semantic scorer has meaningful text to work with.
+            tags_raw_early = str(raw.get("tagsAndSkills", "") or "")
+            if len(description.strip()) < 80 and (title or tags_raw_early):
+                description = (
+                    f"{title} at {company}. "
+                    f"Required skills: {tags_raw_early}. "
+                    f"Experience: {experience_label}. Location: {location}."
+                )
+
             description_clean = clean_description(description)
 
             # Build apply URL from jdURL (relative path) or construct from jobId

@@ -33,36 +33,38 @@ SEARCH_TERMS: list[str] = [
     # LLM / GenAI (highest priority)
     "LLM engineer",
     "generative AI engineer",
+    "LLM application developer",
+    "RAG developer",
     # ML / AI
     "machine learning engineer",
     "AI engineer intern",
+    "AI Python developer",
     # NLP / MLOps
     "NLP engineer",
     "MLOps engineer",
+    # Voice / Agentic AI
+    "voice AI engineer",
+    "AI agent developer",
     # Python / Full Stack
     "Python developer machine learning",
-    "full stack developer AI",
+    "backend developer AI",
 ]
 
 HOURS_OLD: int = 24            # Only jobs from last 24 hours
-RESULTS_PER_TERM: int = 15     # Per platform per search term per location
+RESULTS_PER_TERM: int = 25     # Per platform per search term per location
 
 # ── Title-based Exclude Filter ─────────────────────────────────────────────────
 # Jobs whose title contains any of these (case-insensitive) are dropped early.
 EXCLUDED_TITLE_KEYWORDS: list[str] = [
-    # Senior / management roles
-    "senior ", "lead ", "principal ", "staff engineer", "engineering manager",
+    # Senior / management roles — include abbreviations like "Sr Developer", "Sr. Engineer"
+    "senior ", "sr ", "sr.", "lead ", "principal ", "staff engineer", "engineering manager",
     "head of", " vp ", "chief ", "director", "manager",
-    # Experience requirements in title (4+ years)
-    "4+ year", "5+ year", "6+ year", "7+ year", "8+ year", "9+ year",
-    "10+ year", "4 year", "5 year", "6 year", "7 year", "8 year",
-    "(4+", "(5+", "(6+", "(7+", "(8+", "(9+", "(10+",
     # Frontend-only
     "frontend", "front-end", "front end", "react developer",
     "angular developer", "vue developer", "ui developer", "ux engineer",
     # Pure DevOps / Cloud (no AI)
     "devops engineer", "site reliability engineer", "sre engineer",
-    "cloud engineer", "infrastructure engineer", "platform engineer",
+    "cloud engineer", "infrastructure engineer",
     # Unrelated
     "data engineer", "etl developer", "ios developer", "android developer",
     "sales engineer", "marketing", "business analyst", "scrum master",
@@ -72,7 +74,7 @@ EXCLUDED_TITLE_KEYWORDS: list[str] = [
 KEYWORD_MIN_HITS: int = 1         # Discard jobs with no relevant keywords at all
 SEMANTIC_THRESHOLD: float = 0.33  # Tier 2: keep jobs above this similarity
 LLM_THRESHOLD: float = 0.40       # Tier 3: only LLM-score above this composite
-LLM_ALERT_THRESHOLD: int = 50     # Alert if LLM score >= this (lower = more alerts)
+LLM_ALERT_THRESHOLD: int = 40     # Alert if LLM score >= this (lower = more alerts)
 MAX_LLM_CALLS_PER_RUN: int = 35   # Cost guard
 
 # Fallback: when LLM produces 0 alerts, alert top N semantic candidates instead

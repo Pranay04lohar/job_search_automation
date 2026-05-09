@@ -55,15 +55,25 @@ def _parse_netscape_cookie_file(text: str) -> dict[str, str]:
     Parse Netscape HTTP Cookie File format.
     Format (tab-separated):
       domain  flag  path  secure  expiration  name  value
+
+    Cookie-Editor and similar tools prefix HttpOnly cookies with '#HttpOnly_'
+    instead of the domain. These are real cookies and must be included — we
+    strip the prefix before parsing.
     """
     cookies: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
-        if not line or line.startswith("#"):
+        if not line:
             continue
+
+        # Strip Cookie-Editor's HttpOnly marker and parse the line normally
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        elif line.startswith("#"):
+            continue  # Genuine comment — skip
+
         parts = line.split("\t")
         if len(parts) < 7:
-            # Some exporters use spaces; fall back to any whitespace
             parts = line.split()
         if len(parts) < 7:
             continue

@@ -256,17 +256,17 @@ def _openrouter_chat_completion(
 
     import time as _time
     with httpx.Client(timeout=45) as client:
-        for attempt in range(3):
+        for attempt in range(2):
             resp = client.post(url, headers=headers, json=payload)
             if resp.status_code == 429:
-                wait = 12 * (attempt + 1)   # 12s, 24s, 36s
-                log.warning(f"[LLM] OpenRouter 429 rate limit — waiting {wait}s (attempt {attempt+1}/3)...")
+                wait = 8 * (attempt + 1)   # 8s, 16s — then give up fast
+                log.warning(f"[LLM] OpenRouter 429 rate limit — waiting {wait}s (attempt {attempt+1}/2)...")
                 _time.sleep(wait)
                 continue
             resp.raise_for_status()
             break
         else:
-            raise RuntimeError("OpenRouter 429 rate limit after 3 retries.")
+            raise RuntimeError("OpenRouter 429 rate limit after 2 retries.")
         data = resp.json()
 
     try:
@@ -375,9 +375,23 @@ def run_scoring_pipeline(
         return [j for j, _ in candidates]
 
     alerted_candidates: list[Job] = []
+    consecutive_failures = 0  # abort LLM loop early if API is completely down
 
     for job, comp in llm_candidates:
         result = llm_score_job(job, resume_summary)
+
+        # If the LLM returned a zero score due to error, count it as a failure.
+        # After 2 consecutive failures, stop retrying — the API is down for this run.
+        if result["score"] == 0 and result["verdict"] == "skip" and result.get("one_liner") == "LLM error":
+            consecutive_failures += 1
+            if consecutive_failures >= 2:
+                log.warning(
+                    "[LLM] 2 consecutive failures — API appears down (rate limit / outage). "
+                    "Aborting LLM scoring and falling back to semantic scores."
+                )
+                break
+        else:
+            consecutive_failures = 0
 
         job.llm_score = result["score"]
         job.llm_verdict = result["verdict"]
