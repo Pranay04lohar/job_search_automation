@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 def scrape_jobspy(
     search_terms: list[str],
     location: str,
-    hours_old: int = 168,
+    hours_old: int = 24,
     results_per_term: int = 50,
 ) -> list[dict[str, Any]]:
     """
@@ -75,7 +75,7 @@ if __name__ == "__main__":
     results = scrape_jobspy(
         ["machine learning engineer"],
         "Bengaluru, India",
-        hours_old=168,
+        hours_old=24,
         results_per_term=10,
     )
     print(f"Got {len(results)} raw jobs")

@@ -10,7 +10,7 @@ if __name__ == "__main__":
     results = scrape_jobspy(
         ["machine learning engineer"],
         "Bengaluru, India",
-        hours_old=168,
+        hours_old=24,
         results_per_term=10,
     )
     print(f"\nGot {len(results)} raw jobs")

@@ -1,175 +1,231 @@
-"""Wellfound (AngelList) GraphQL job scraper using curl_cffi."""
+"""
+Wellfound (AngelList) Playwright scraper.
+
+Strategy: use the persistent Chrome profile to load Wellfound role-search pages
+(https://wellfound.com/role/l/{slug}/india) and extract all job data from the
+Apollo GraphQL cache embedded in the page's __NEXT_DATA__ script tag.
+
+This avoids the GraphQL API endpoint which DataDome specifically blocks for
+programmatic requests — a real browser with a persistent, trusted session
+loads the pages fine and the full job data is embedded in the HTML.
+"""
 
 import json
 import logging
-import os
-import random
 import time
 from pathlib import Path
 from typing import Any
 
-import config
-from scrapers.cookie_loader import load_cookies_first_existing
-
 log = logging.getLogger(__name__)
 
-WELLFOUND_GQL_ENDPOINT = "https://wellfound.com/graphql"
+_PERSISTENT_PROFILE = str(Path("cookies") / "_playwright_profile")
 
-JOBS_QUERY = """
-query JobSearchResults($query: String!, $remote: Boolean) {
-  talent {
-    jobListings(query: $query, remote: $remote) {
-      totalCount
-      edges {
-        node {
-          id
-          title
-          description
-          compensation
-          remote
-          jobType
-          slug
-          startups {
-            name
-            websiteUrl
-          }
-          locations { displayName }
-        }
-      }
-    }
-  }
-}
-"""
-
-STEALTH_HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-IN,en-US;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Content-Type": "application/json",
-    "Connection": "keep-alive",
-    "Origin": "https://wellfound.com",
-    "Referer": "https://wellfound.com/jobs",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
-    "DNT": "1",
-}
+# Wellfound role slugs that map to our target job categories.
+# URL pattern: https://wellfound.com/role/l/{slug}/india
+_ROLE_SLUGS = [
+    "machine-learning-engineer",
+    "ai-engineer",
+    "python-developer",
+    "mlops-engineer",
+    "nlp-engineer",
+    "backend-engineer",
+    "data-scientist",
+]
 
 
-def _load_cookies() -> dict[str, str]:
-    """Load cookies from cookies/wellfound_cookies.(json|txt) if it exists."""
-    cookie_paths = [
-        Path(config.COOKIES_DIR) / "wellfound_cookies.json",
-        Path(config.COOKIES_DIR) / "wellfound_cookies.txt",
-        Path(config.COOKIES_DIR) / "wellfound_cookies.cookies",
-    ]
-    cookies = load_cookies_first_existing(cookie_paths)
-    if not cookies:
-        cookie_path = cookie_paths[0]
-        log.warning(
-            f"[Wellfound] Cookie file not found at {cookie_path}. "
-            "Export cookies and save to cookies/wellfound_cookies.json (or .txt for Netscape format) for auth."
+def _extract_apollo_state(page) -> dict:
+    """Extract the Apollo GraphQL cache from the __NEXT_DATA__ script tag."""
+    try:
+        raw = page.evaluate(
+            """() => {
+                const el = document.getElementById('__NEXT_DATA__');
+                return el ? el.textContent : null;
+            }"""
         )
+        if not raw:
+            return {}
+        data = json.loads(raw)
+        # Path: props -> pageProps -> apolloState -> data
+        return (
+            data.get("props", {})
+            .get("pageProps", {})
+            .get("apolloState", {})
+            .get("data", {})
+        )
+    except Exception as e:
+        log.debug(f"[Wellfound] __NEXT_DATA__ extraction failed: {e}")
         return {}
-    return cookies
 
 
-def scrape_wellfound(
-    search_terms: list[str],
-    remote: bool = True,
-) -> list[dict[str, Any]]:
+def _parse_jobs_from_graph(graph: dict, role_slug: str) -> list[dict]:
     """
-    Query the Wellfound GraphQL endpoint for each search term.
+    Extract JobListingSearchResult nodes from the Apollo graph.
+    Company info is resolved by following the StartupResult reference.
+    """
+    jobs: list[dict] = []
 
-    Requires valid session cookies in cookies/wellfound_cookies.json (or .txt Netscape format).
-    Returns raw job node dicts from edges[].node.
-    Gracefully returns [] if cookies are missing or auth fails.
+    for key, node in graph.items():
+        if not key.startswith("JobListingSearchResult:"):
+            continue
+        if not isinstance(node, dict):
+            continue
+
+        title = str(node.get("title") or node.get("primaryRoleTitle") or "").strip()
+        if not title:
+            continue
+
+        # Resolve company from StartupResult reference
+        company = ""
+        startup_slug = ""
+        startup_ref = node.get("startup") or {}
+        if isinstance(startup_ref, dict) and startup_ref.get("type") == "id":
+            startup_node = graph.get(startup_ref["id"], {})
+            company = str(startup_node.get("name", "")).strip()
+            startup_slug = str(startup_node.get("slug", "")).strip()
+
+        if not company:
+            continue
+
+        # Location: stored as {"type": "json", "json": ["Bengaluru", "Remote"]}
+        loc_raw = node.get("locationNames") or {}
+        if isinstance(loc_raw, dict) and "json" in loc_raw:
+            location = ", ".join(str(l) for l in loc_raw["json"] if l)
+        else:
+            location = ""
+
+        # Build the canonical job URL
+        job_id = str(node.get("id", key.split(":")[-1]))
+        if startup_slug and job_id:
+            apply_url = f"https://wellfound.com/company/{startup_slug}/jobs/{job_id}"
+        else:
+            apply_url = f"https://wellfound.com/jobs/{job_id}"
+
+        # Posted timestamp
+        live_start = node.get("liveStartAt")
+        posted_iso = None
+        if live_start:
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                posted_iso = _dt.fromtimestamp(
+                    int(live_start), tz=_tz.utc
+                ).isoformat()
+            except Exception:
+                pass
+
+        jobs.append({
+            "id": job_id,
+            "title": title,
+            # WellfoundNormalizer looks for "startups" list; keep compatible
+            "startups": [{"name": company, "slug": startup_slug}],
+            # Also include flat field for the updated normalizer path
+            "company": company,
+            "locations": [{"displayName": loc} for loc in (location.split(", ") if location else [])],
+            "location": location,
+            "remote": bool(node.get("remote", False)),
+            "description": str(node.get("description") or ""),
+            "slug": role_slug,
+            "jdURL": apply_url,
+            "apply_url": apply_url,
+            "compensation": str(node.get("compensation") or ""),
+            "jobType": str(node.get("jobType") or ""),
+            "posted_at": posted_iso,
+        })
+
+    return jobs
+
+
+def scrape_wellfound(search_terms: list[str]) -> list[dict[str, Any]]:
+    """
+    Scrape Wellfound by loading role-search pages with Playwright and extracting
+    Apollo state from __NEXT_DATA__.
+
+    `search_terms` is accepted for API compatibility but we use a fixed set of
+    curated role slugs instead, since Wellfound's URL-based role search is more
+    reliable than keyword search.
     """
     try:
-        from curl_cffi import requests as cffi_requests  # type: ignore[import]
+        from playwright.sync_api import sync_playwright
     except ImportError:
-        log.error("[Wellfound] 'curl_cffi' not installed. Run: pip install curl-cffi")
+        log.error("[Wellfound] playwright not installed. Run: pip install playwright")
         return []
-
-    cookies = _load_cookies()
-    if not cookies:
-        return []
-
-    # Extract CSRF token from cookies if present
-    headers = dict(STEALTH_HEADERS)
-    csrf_token = cookies.get("_csrf_token") or cookies.get("csrf_token") or ""
-    if csrf_token:
-        headers["x-csrf-token"] = csrf_token
 
     all_jobs: list[dict] = []
     seen_ids: set[str] = set()
 
-    for term in search_terms:
+    log.info(
+        f"[Wellfound] Playwright scraper starting — {len(_ROLE_SLUGS)} role pages"
+    )
+
+    with sync_playwright() as pw:
+        context = pw.chromium.launch_persistent_context(
+            user_data_dir=_PERSISTENT_PROFILE,
+            headless=False,
+            args=[
+                "--start-maximized",
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ],
+            no_viewport=True,
+            ignore_default_args=["--enable-automation"],
+        )
+        page = context.new_page()
+
+        # Apply stealth to reduce automation fingerprint
         try:
-            payload = {
-                "query": JOBS_QUERY,
-                "variables": {"query": term, "remote": remote},
-            }
+            from playwright_stealth import Stealth
+            Stealth().use_sync(page)
+        except Exception:
+            pass
 
-            response = cffi_requests.post(
-                WELLFOUND_GQL_ENDPOINT,
-                json=payload,
-                headers=headers,
-                cookies=cookies,
-                impersonate="chrome124",
-                timeout=30,
+        # Warm up: visit the jobs home page to let DataDome validate the session
+        try:
+            page.goto(
+                "https://wellfound.com/jobs",
+                wait_until="domcontentloaded",
+                timeout=45_000,
             )
-
-            if response.status_code == 403:
-                # 403 = auth failure — cookies are expired or invalid.
-                # Retrying won't help; abort entire scraper to save time.
-                log.error(
-                    "[Wellfound] 403 Forbidden — session cookies are expired or invalid. "
-                    "Re-export your Wellfound cookies and save to "
-                    "cookies/wellfound_cookies.txt, then retry."
+            time.sleep(3)
+            page_title = page.title().lower()
+            if "access denied" in page_title or "blocked" in page_title:
+                log.warning(
+                    "[Wellfound] Access denied on warm-up — DataDome challenge not resolved. "
+                    "Try running refresh_cookies.py manually first."
                 )
-                return all_jobs
-
-            if response.status_code == 429:
-                sleep_time = random.uniform(30, 60)
-                log.warning(f"[Wellfound] Rate limited (429). Sleeping {sleep_time:.0f}s, retrying...")
-                time.sleep(sleep_time)
-                response = cffi_requests.post(
-                    WELLFOUND_GQL_ENDPOINT,
-                    json=payload,
-                    headers=headers,
-                    cookies=cookies,
-                    impersonate="chrome124",
-                    timeout=30,
-                )
-                if response.status_code != 200:
-                    log.error(f"[Wellfound] Still blocked after retry for '{term}'. Skipping.")
-                    continue
-
-            data = response.json()
-            edges = (
-                data.get("data", {})
-                .get("talent", {})
-                .get("jobListings", {})
-                .get("edges", [])
-            )
-
-            new_count = 0
-            for edge in edges:
-                node = edge.get("node", {})
-                node_id = str(node.get("id", ""))
-                if node_id in seen_ids:
-                    continue
-                seen_ids.add(node_id)
-                all_jobs.append(node)
-                new_count += 1
-
-            log.info(f"[Wellfound] '{term}': {new_count} jobs")
-
+                context.close()
+                return []
+            log.info(f"[Wellfound] Session warm-up OK (title: {page.title()[:60]})")
         except Exception as e:
-            log.error(f"[Wellfound] Failed for '{term}': {type(e).__name__}: {e}")
+            log.warning(f"[Wellfound] Warm-up failed: {e}")
 
-        time.sleep(random.uniform(3.0, 7.0))
+        for slug in _ROLE_SLUGS:
+            url = f"https://wellfound.com/role/l/{slug}/india"
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+                time.sleep(3)
+
+                graph = _extract_apollo_state(page)
+                if not graph:
+                    log.debug(f"[Wellfound] No Apollo state for slug '{slug}'")
+                    continue
+
+                jobs = _parse_jobs_from_graph(graph, slug)
+                new_count = 0
+                for job in jobs:
+                    jid = job.get("id", "")
+                    if jid and jid in seen_ids:
+                        continue
+                    if jid:
+                        seen_ids.add(jid)
+                    all_jobs.append(job)
+                    new_count += 1
+
+                log.info(f"[Wellfound] '{slug}': {new_count} jobs")
+                time.sleep(2)
+
+            except Exception as e:
+                log.warning(f"[Wellfound] Failed for slug '{slug}': {type(e).__name__}: {e}")
+
+        context.close()
 
     log.info(f"[Wellfound] Total raw jobs: {len(all_jobs)}")
     return all_jobs

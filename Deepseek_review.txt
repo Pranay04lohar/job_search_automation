@@ -1,0 +1,100 @@
+Your pipeline is currently producing 7–8 high‑quality Telegram alerts per day despite scraping six platforms and processing ~200 raw jobs per run. The bottleneck isn’t a lack of platforms—it’s a combination of configuration choices, dedup logic, and cost‑saving thresholds that together cap the output. You can reach 30+ **quality** alerts without sacrificing precision by tuning the existing pipeline and making a few architectural tweaks.
+
+Here’s a concrete improvement plan, ordered by likely impact.
+
+---
+
+## 1. Fix the biggest content‑hash mistake
+**Current problem:**  
+`content_hash = MD5(title + company)` means that a company’s second identical‑title posting (e.g., “Senior MLE” at ABC Corp, reposted one week later) **always gets deduped** as a duplicate of the first. You silently lose all follow‑up openings, which is a major quantity killer for active hirers.
+
+**Solution:**  
+Include the **posting date** (normalised to a day‑resolution) in the hash:
+```python
+content_hash = MD5(title + company + posted_date)
+```
+This way, each unique job *offering* (title+company+day) is stored separately, preserving all openings.  
+Additionally, you can drop the strict MD5 dedup for content and use a **fuzzy title matcher** (you already have `rapidfuzz` installed) to merge “Senior Engineer” / “Sr. Engineer” / “Senior SWE” and avoid *over‑merging* the same actual posting, while still allowing different‑day postings.
+
+**Expected outcome:**  
+If companies post the same role across multiple days, you’ll now capture 2‑3x more distinct listings without any other change.
+
+---
+
+## 2. Expand search coverage *within* existing platforms
+Your scrapers are doing excellent anti‑bot work, but the **number of search terms and pages** might be conservative.
+
+**Actions:**
+- **Increase `pages_per_term`** for Naukri, Hirist, and JobSpy (Indeed/LinkedIn). Currently capped to avoid detection—raise slowly while monitoring rate limits.
+- **Add more search keywords** in your config. For example, instead of just “Senior ML Engineer”, add “Staff ML Engineer”, “Lead Data Scientist”, “Principal AI Engineer”, “Generative AI Engineer”, “LLM Engineer”, “Applied Scientist”, etc.  
+- **Broaden location coverage**: if you’re currently limited to “Bangalore” or a few city slugs, expand to all major Indian tech hubs (Hyderabad, Pune, Delhi NCR, Chennai, Mumbai, Remote) using multiple location entries.  
+- **Hirist categories**: The scraper already hits all 8 categories; ensure you aren’t limiting by years of experience unnecessarily.
+
+**Expected outcome:**  
+2–3x more raw job postings entering the pipeline, feeding more candidates into the scoring cascade.
+
+---
+
+## 3. Tune the scoring thresholds (without losing quality)
+Your 3‑tier cascade is sound; you just need to relax the gates slightly.
+
+- **Keyword prefilter:**  
+  Instead of `KEYWORD_MIN_HITS=1` on a narrow set, **expand `REQUIRED_KEYWORDS` to 20‑30 terms** (e.g., “machine learning”, “deep learning”, “NLP”, “computer vision”, “MLOps”, “Python”, “TensorFlow”, “PyTorch”, “LLM”, “RAG”, “transformers”, “backend”, “AI”, …). This lets more potentially relevant jobs pass to the semantic layer, where actual meaning is evaluated. The semantic + LLM tiers will still filter out the noise.
+
+- **Semantic threshold:**  
+  Lower `SEMANTIC_THRESHOLD` from **0.33 → 0.25**. This is a safe move—cosine similarity of 0.25 still indicates non‑trivial overlap, and the LLM final gate will ensure you don’t get junk. Experiment in 0.02 steps; you’ll find a range that **triples** the number of candidates pushed to Tier 3 while maintaining quality.
+
+- **LLM alert threshold:**  
+  Reduce `LLM_ALERT_THRESHOLD` from **40 → 35** (or even 30), but require `verdict != "Weak Match"`. A score of 35–40 often corresponds to roles where you’re a “Partial Match” with relevant skills but maybe missing one niche requirement—still worth pushing to your Telegram so you can decide.
+
+**Expected outcome:**  
+The number of jobs that survive Tier 2 can jump from ~15 → ~40‑50, and more of those will qualify for an alert.
+
+---
+
+## 4. Increase the LLM throughput cap and make it more resilient
+Your LLM call cap (`MAX_LLM_CALLS_PER_RUN`) is keeping alerts artificially low. If you’re using the free OpenRouter tier, you’re probably rate‑limited after 10‑15 calls.
+
+**Improvements:**
+- **Switch to Groq** (already implemented!) and use a paid tier with higher RPM limits, or add a fallback to a faster/cheaper model (like Llama‑3‑8B) when the primary model’s quota is exceeded.
+- **Increase `MAX_LLM_CALLS_PER_RUN` to 60‑80**. With a semantic threshold lowered to 0.25, you might feed ~50 jobs to the LLM; that many calls are feasible with Groq’s speed.
+- **Cache LLM responses** keyed on `content_hash` (the new date‑aware hash). A job that reappears across runs doesn’t need to be scored again—this saves quota for genuinely new jobs.
+- **Async batch requests** using `asyncio` + `httpx.AsyncClient` to overlap network I/O and drastically reduce total LLM scoring time. This doesn’t increase volume directly but allows you to process more calls within the same runtime window.
+
+**Expected outcome:**  
+You’ll score 2‑3x more jobs per run, and the alert rate per scored job will hold steady (roughly 40‑50% of LLM‑scored jobs become alerts), pushing you well past 30 alerts per day.
+
+---
+
+## 5. Add one or two high‑quality portals
+Adding more platforms **is** a valid way to increase volume, but it should be done after optimising the existing ones. That said, here are the best candidates for Indian tech roles:
+
+- **CutShort** – growing Indian tech‑focused platform with a clean API; no aggressive anti‑bot protection. Similar to Hirist.
+- **Google Jobs API** (via `serpapi` or Puppeteer) – aggregates listings from multiple sites, but may require careful handling.
+- **AngelList (Wellfound v1)** – already covered via GraphQL; ensure you’re using all filters.
+- **LinkedIn advanced scraping** – currently using python‑jobspy which may be limited to basic results; a Playwright‑based LinkedIn scraper with persistent session could extract **many more** postings than the library provides.
+
+**Recommendation:** Start with CutShort and a deeper LinkedIn Playwright scraper, as they require minimal anti‑bot complexity and yield unique jobs.
+
+---
+
+## 6. Increase pipeline frequency
+If you’re currently running the scheduler once per day, change it to `IntervalTrigger(hours=4)` (or even 2‑3 hours). New jobs are posted throughout the day; more frequent runs capture fresh listings before they expire and before your dedup sees them as “already scraped”. Coupled with the date‑aware dedup, this will naturally multiply daily alerts.
+
+---
+
+### So, should you increase the number of portals?
+**Yes**, but only **after** implementing the above optimisations. The six you already have (LinkedIn, Indeed, Naukri, Wellfound, Hirist, Instahyre) collectively cover the vast majority of AI/ML roles in India. The low output is not a portal shortage—it’s a settings/dedup/scoring throughput issue. Adding a seventh portal like CutShort will add maybe 5‑10% more listings, while the tuning steps will easily **triple** your current volume.
+
+---
+
+### Projected path to 30+ daily alerts
+1. Date‑aware dedup → +80% lift from capturing reposts.
+2. Expanded keywords + page depth → +60% raw jobs.
+3. Lower semantic threshold → +120% candidates entering LLM stage.
+4. Groq paid tier + 60 LLM calls → score everything, ~45% become alerts.
+5. Run every 4 hours → 6 runs/day, giving a steady stream.
+
+Conservative estimate: **7‑8 alerts/day → 40‑50 quality alerts/day**, without building a single new scraper.
+
+You’ve already designed a brilliant MLOps‑style cascade; now it’s just about dialing the knobs so it lets more high‑potential jobs through without sacrificing the signal.

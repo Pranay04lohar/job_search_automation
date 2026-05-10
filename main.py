@@ -58,26 +58,8 @@ def _ping_healthcheck(url: str, suffix: str = "") -> None:
 
 
 def _refresh_cookies_if_needed() -> None:
-    """Run the Playwright cookie refresher for Wellfound before scraping."""
-    if not config.ENABLE_WELLFOUND:
-        return
-    log = logging.getLogger("pipeline")
-    log.info("[Cookies] Refreshing Naukri/Wellfound cookies via Playwright ...")
-    try:
-        import subprocess
-        import sys
-        result = subprocess.run(
-            [sys.executable, "refresh_cookies.py"],
-            timeout=120,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            log.info("[Cookies] Cookie refresh complete.")
-        else:
-            log.warning(f"[Cookies] refresh_cookies.py exited with code {result.returncode}:\n{result.stderr}")
-    except Exception as e:
-        log.warning(f"[Cookies] Cookie refresh failed ({e}). Proceeding with existing cookies.")
+    """No-op: Wellfound and Naukri now manage their own Playwright sessions."""
+    pass
 
 
 def run_pipeline() -> None:

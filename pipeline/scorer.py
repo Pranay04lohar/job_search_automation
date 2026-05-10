@@ -320,23 +320,79 @@ def run_scoring_pipeline(
         return []
 
     # ── Tier 2: Semantic + skill overlap ──────────────────────────────────────
+    # Jobs from card-only scrapers (Naukri) have short synthetic descriptions.
+    # For those, encode title+skills as a fairer semantic proxy instead of the
+    # sparse synthetic description — this prevents good Naukri jobs from being
+    # silently dropped just because the card had little text.
+    SPARSE_DESC_LEN = 220  # descriptions shorter than this are likely card-only
+
     log.info(f"[Score] Running semantic scoring on {len(kw_passed)} jobs...")
     semantic_scores = matcher.batch_score(kw_passed)
 
+    # For sparse-description jobs, rescore with title+skills only
+    sparse_jobs = [
+        j for j in kw_passed if len(j.description_clean) < SPARSE_DESC_LEN
+    ]
+    sparse_title_scores: dict[int, float] = {}
+    if sparse_jobs:
+        sparse_texts = [
+            (j.title + " " + " ".join(j.skills[:10])).strip()
+            for j in sparse_jobs
+        ]
+        sparse_embeddings = matcher._model.encode(
+            sparse_texts, normalize_embeddings=True,
+            batch_size=32, show_progress_bar=False,
+        )
+        try:
+            import numpy as _np
+        except ImportError:
+            _np = None  # type: ignore[assignment]
+        sparse_title_scores = {
+            id(j): float(_np.dot(matcher.resume_embedding, emb))  # type: ignore[union-attr]
+            for j, emb in zip(sparse_jobs, sparse_embeddings)
+        }
+        log.info(
+            f"[Score] {len(sparse_jobs)} jobs with sparse descriptions — "
+            "rescoring with title+skills"
+        )
+
     candidates: list[tuple[Job, float]] = []
+    dropped_by_platform: dict[str, int] = {}
     for job, sem_score in zip(kw_passed, semantic_scores):
-        if sem_score < semantic_threshold:
+        # Use the better of description-based score or title-only score
+        if len(job.description_clean) < SPARSE_DESC_LEN:
+            title_score = sparse_title_scores.get(id(job), sem_score)
+            effective_score = max(sem_score, title_score)
+        else:
+            effective_score = sem_score
+
+        if effective_score < semantic_threshold:
+            dropped_by_platform[job.platform] = (
+                dropped_by_platform.get(job.platform, 0) + 1
+            )
             continue
         skill_score = skill_overlap_score(job, your_skills)
-        comp = composite_score(sem_score, skill_score)
+        comp = composite_score(effective_score, skill_score)
         job.match_score = comp
         db.update_scores(job.id, match_score=comp)
         candidates.append((job, comp))
 
     candidates.sort(key=lambda x: x[1], reverse=True)
-    log.info(
-        f"[Score] {len(candidates)} candidates above semantic threshold {semantic_threshold}"
-    )
+
+    if dropped_by_platform:
+        drops = ", ".join(f"{p}:{n}" for p, n in sorted(dropped_by_platform.items()))
+        log.info(f"[Score] Dropped below semantic threshold by platform — {drops}")
+
+    # Log per-platform pass counts for visibility
+    platform_counts: dict[str, int] = {}
+    for job, _ in candidates:
+        platform_counts[job.platform] = platform_counts.get(job.platform, 0) + 1
+    if platform_counts:
+        passes = ", ".join(f"{p}:{n}" for p, n in sorted(platform_counts.items()))
+        log.info(
+            f"[Score] {len(candidates)} candidates above semantic threshold "
+            f"{semantic_threshold} — by platform: {passes}"
+        )
 
     if not candidates or not config.ENABLE_LLM_SCORING:
         return [j for j, _ in candidates]
@@ -376,9 +432,18 @@ def run_scoring_pipeline(
 
     alerted_candidates: list[Job] = []
     consecutive_failures = 0  # abort LLM loop early if API is completely down
+    cache_hits = 0
 
     for job, comp in llm_candidates:
-        result = llm_score_job(job, resume_summary)
+        # Reuse a prior LLM score if the same role (title+company) was already scored.
+        # This saves Groq quota for genuinely new jobs.
+        cached = db.get_cached_llm_score(job.content_hash)
+        if cached:
+            result = cached
+            cache_hits += 1
+            _log.debug(f"[LLM] Cache hit: {job.title} @ {job.company} (score={result['score']})")
+        else:
+            result = llm_score_job(job, resume_summary)
 
         # If the LLM returned a zero score due to error, count it as a failure.
         # After 2 consecutive failures, stop retrying — the API is down for this run.
@@ -419,7 +484,8 @@ def run_scoring_pipeline(
 
     alerted_candidates.sort(key=lambda j: j.llm_score or 0, reverse=True)
     log.info(
-        f"[LLM] {len(llm_candidates)} scored, "
+        f"[LLM] {len(llm_candidates)} scored "
+        f"({cache_hits} from cache, {len(llm_candidates) - cache_hits} fresh API calls), "
         f"{len(alerted_candidates)} above alert threshold {llm_alert_threshold}"
     )
 

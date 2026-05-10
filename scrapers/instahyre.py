@@ -83,6 +83,7 @@ def scrape_instahyre(search_terms: list[str]) -> list[dict[str, Any]]:
 
     # Detect working base URL on first request (v2 preferred, v1 fallback)
     active_url_template: str = INSTAHYRE_SEARCH_URL
+    auth_failed = False  # abort all terms immediately when cookies are expired
 
     with httpx.Client(
         headers=STEALTH_HEADERS,
@@ -91,6 +92,8 @@ def scrape_instahyre(search_terms: list[str]) -> list[dict[str, Any]]:
         follow_redirects=True,
     ) as client:
         for term in search_terms:
+            if auth_failed:
+                break
             try:
                 for page in range(1, MAX_PAGES + 1):
                     url = active_url_template.format(term=term, page=page)
@@ -118,9 +121,11 @@ def scrape_instahyre(search_terms: list[str]) -> list[dict[str, Any]]:
 
                     if response.status_code in (401, 403):
                         log.warning(
-                            f"[Instahyre] Auth failed (HTTP {response.status_code}) for '{term}'. "
-                            "Cookie may be expired."
+                            f"[Instahyre] Auth failed (HTTP {response.status_code}) — "
+                            "cookies are expired. Re-export from browser and save to "
+                            "cookies/instahyre_cookies.txt. Skipping all remaining terms."
                         )
+                        auth_failed = True
                         break
 
                     if response.status_code == 429:

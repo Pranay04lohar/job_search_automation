@@ -1,0 +1,176 @@
+Looking at your architecture doc carefully, the bottleneck isn't the number of portals — it's your **scoring funnel being too aggressive**. Let me break down exactly where jobs are being dropped.
+
+## The Real Funnel Problem
+
+Your current cascade kills ~97% of scraped jobs:
+
+```
+200 scraped
+→ ~80 pass keyword filter     (60% drop)  
+→ ~20 pass semantic (≥0.33)   (75% drop)
+→ ~10 get LLM scored          (MAX_LLM_CALLS cap)
+→ 3–7 alerts sent             (LLM_ALERT_THRESHOLD=40)
+```
+
+You have **four independent kill switches** and any one of them can be the actual bottleneck on a given day.
+
+---
+
+## Diagnosis First — Do This Before Changing Anything
+
+Add per-stage counters to your pipeline and log them every run:
+
+```python
+logger.info(f"FUNNEL: scraped={len(all_jobs)} | keyword_pass={len(kw_pass)} | "
+            f"semantic_pass={len(sem_pass)} | llm_scored={len(llm_scored)} | "
+            f"alerted={len(alerted)}")
+```
+
+**You need to know which stage is actually killing your jobs before tuning.** Without this, you're guessing.
+
+---
+
+## What to Actually Fix (Ranked by Impact)
+
+### 1. Your Semantic Threshold is Probably Too Aggressive
+
+`SEMANTIC_THRESHOLD=0.33` with `all-MiniLM-L6-v2` sounds permissive but cosine similarity distributions are non-linear. A genuinely relevant job might score 0.28 because the description uses different vocabulary ("applied AI" vs "machine learning").
+
+**Fix:** Lower to `0.20–0.25`. Run a one-time audit:
+
+```python
+# In preview_daily.py or a script — score ALL recent DB jobs semantically
+# and inspect the score distribution of jobs you manually consider good
+jobs = db.get_recent_jobs(days=7)
+scores = matcher.batch_score(jobs)
+for job, score in sorted(zip(jobs, scores), key=lambda x: x[1], reverse=True):
+    print(f"{score:.3f} | {job.title} @ {job.company}")
+```
+
+Look at where the jobs you *would have wanted* are scoring. That's your real threshold.
+
+### 2. `KEYWORD_MIN_HITS=1` is Fine, but Check Your Keyword List
+
+If your `REQUIRED_KEYWORDS` list is narrow (e.g., only `["machine learning", "LLM", "deep learning"]`), roles described as "applied AI engineer" or "GenAI platform" or "ML infrastructure" are being dropped at Tier 1 before any semantic understanding happens.
+
+**Fix:** Expand your keyword list with synonyms and adjacent terms:
+
+```python
+REQUIRED_KEYWORDS = [
+    # Core ML
+    "machine learning", "ml", "deep learning", "neural network",
+    # GenAI / LLM
+    "llm", "large language model", "generative ai", "genai", "gpt", "rag",
+    "fine-tuning", "fine tuning", "foundation model",
+    # Applied/Platform roles you'd actually want
+    "ml platform", "ml infrastructure", "mlops", "ai engineer",
+    "applied scientist", "data scientist",
+    # Backend if you're open to it
+    "backend", "distributed systems", "platform engineer",
+]
+```
+
+### 3. `MAX_LLM_CALLS_PER_RUN` Cap is Silent Death
+
+If `MAX_LLM_CALLS_PER_RUN=10` and 18 jobs pass semantic, the bottom 8 get zero LLM evaluation and are quietly dropped. You never know this happened.
+
+**Two fixes:**
+
+First, raise the cap. Llama 3.3 70B on OpenRouter free tier is slow but `max_tokens=512` calls are cheap. Set it to 30–40.
+
+Second, **change your fallback behavior**. Right now, jobs that don't get LLM scored are just dropped. Instead, alert on composite semantic score above a threshold:
+
+```python
+# In scorer.py — for jobs that hit the LLM cap
+if not llm_scored and composite_score > FALLBACK_COMPOSITE_THRESHOLD:
+    job.llm_verdict = "Not LLM Scored"
+    job.llm_score = int(composite_score * 100)  # proxy score
+    qualifying_for_alert.append(job)
+```
+
+### 4. Switch to Async LLM Calls
+
+Your biggest throughput lever. Right now LLM calls are sequential — each one blocks 1–5 seconds. 15 calls = up to 75 seconds of wall time. With async, they run in parallel:
+
+```python
+# scorer.py — replace sequential loop with async gather
+import asyncio
+import httpx
+
+async def llm_score_batch(jobs: list[Job]) -> list[dict]:
+    async with httpx.AsyncClient(timeout=30) as client:
+        tasks = [_llm_score_one_async(client, job) for job in jobs]
+        return await asyncio.gather(*tasks, return_exceptions=True)
+```
+
+This lets you **comfortably raise `MAX_LLM_CALLS_PER_RUN` to 40–50** without increasing wall-clock time.
+
+### 5. Cache LLM Scores on `content_hash`
+
+The same job reappears across scrape runs (especially Naukri/LinkedIn). You're re-scoring jobs you've already evaluated.
+
+```python
+# In db.py
+def get_cached_llm_score(self, content_hash: str) -> Optional[dict]:
+    row = self.conn.execute(
+        "SELECT llm_score, llm_verdict, llm_strengths, llm_gaps, llm_one_liner "
+        "FROM jobs WHERE content_hash = ? AND llm_score IS NOT NULL LIMIT 1",
+        (content_hash,)
+    ).fetchone()
+    return dict(row) if row else None
+```
+
+```python
+# In scorer.py — before calling LLM
+cached = db.get_cached_llm_score(job.content_hash)
+if cached:
+    # Reuse score, skip API call — this slot now goes to a new job
+    apply_cached_score(job, cached)
+    continue
+```
+
+This effectively gives you more LLM budget for genuinely new jobs.
+
+### 6. Add Naukri Keyword Expansion
+
+Your Naukri scraper uses city-slug SEO URLs. If you're only querying 2–3 keyword slugs, you're missing entire subcategories. Add role variants:
+
+```python
+NAUKRI_SEARCH_TERMS = [
+    "machine-learning-engineer",
+    "ai-engineer", 
+    "mlops-engineer",
+    "llm-engineer",
+    "generative-ai-engineer",
+    "applied-scientist",
+    "ml-platform-engineer",
+    "backend-engineer-ai",  # if open to backend
+]
+```
+
+Each term adds one pagination pass. This is the safest "more quantity" lever — no new platform integration needed.
+
+---
+
+## Should You Add More Portals?
+
+**Only after fixing the funnel.** Adding Cutshort, Turing, or Foundit to a funnel that's already dropping 97% of jobs means more noise, more anti-bot complexity, and the same 7-8 alerts.
+
+That said, **Cutshort** is worth adding once the funnel is tuned — it's heavily used by Indian AI/ML startups that don't post on Naukri/LinkedIn, it has a clean REST API, and it doesn't need Playwright. That's genuinely additive signal.
+
+---
+
+## Summary: Priority Order
+
+| Fix | Effort | Expected Impact |
+|---|---|---|
+| Log per-stage counts | 30 min | Tells you exactly what to fix |
+| Audit & lower semantic threshold | 1 hr | Likely +50% pass-through at Tier 2 |
+| Expand keyword list | 30 min | Recovers roles lost at Tier 1 |
+| Raise + fix LLM cap with fallback | 1 hr | Stops silent job drops |
+| LLM score caching on `content_hash` | 2 hr | More budget for new jobs |
+| Async LLM calls | 3 hr | Enables higher cap without slowdown |
+| Expand Naukri search terms | 30 min | More raw volume from existing scraper |
+| Add Cutshort portal | 1–2 days | Genuinely new job signal |
+
+Fix the funnel first. You likely have 30 qualifying jobs already being scraped — they're just being dropped before you see them.

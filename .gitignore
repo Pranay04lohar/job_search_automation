@@ -7,10 +7,12 @@
 *.db-wal
 *.db-shm
 
-# Cookies (never commit session cookies)
+# Cookies (never commit session cookies or browser profiles)
 cookies/*.json
 cookies/*.txt
 cookies/*.cookies
+# Playwright persistent browser profiles — contain session tokens and can be GB-sized
+cookies/_playwright*/
 
 # Logs
 logs/*.log

@@ -10,7 +10,7 @@ This shows you exactly what a fresh daily cron run will look like, using the
 627+ jobs already accumulated from today's scrape runs.
 
 Usage:
-    .\.venv\Scripts\python.exe .\preview_daily.py
+    .venv\\Scripts\\python.exe preview_daily.py
 """
 
 import logging
@@ -29,7 +29,7 @@ logging.basicConfig(
 log = logging.getLogger("preview")
 
 # ── Tuning ─────────────────────────────────────────────────────────────────────
-SEMANTIC_MIN     = 0.42    # Only consider jobs above this semantic composite score
+SEMANTIC_MIN     = 0.28    # Only consider jobs above this semantic composite score
 LLM_CAP          = 90      # Score all candidates — Groq free tier handles this fine
 ALERT_THRESHOLD  = 40      # Alert if LLM score >= this (matches config.LLM_ALERT_THRESHOLD)
 MAX_ALERTS       = 20      # Cap on total Telegram alerts sent
@@ -37,13 +37,16 @@ MAX_ALERTS       = 20      # Cap on total Telegram alerts sent
 
 
 def _fetch_candidates(min_semantic: float) -> list[Job]:
-    """Return all jobs with match_score >= min_semantic, sorted best-first."""
+    """Return unalerted jobs with match_score >= min_semantic, sorted best-first."""
     conn = db.get_connection()
     try:
         rows = conn.execute(
             """
             SELECT * FROM jobs
             WHERE match_score >= ?
+              AND alerted = 0
+              AND company != 'nan'
+              AND company != ''
             ORDER BY COALESCE(llm_score, 0) DESC, match_score DESC
             """,
             (min_semantic,),
@@ -136,6 +139,7 @@ def main() -> None:
     for job in to_alert:
         success = alerter.send_job_alert(job)
         if success:
+            db.mark_alerted(job.id)
             sent += 1
         time.sleep(0.5)
 

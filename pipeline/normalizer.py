@@ -241,29 +241,39 @@ class JobSpyNormalizer:
 
 
 class WellfoundNormalizer:
-    """Normalizes raw dicts returned by the Wellfound GraphQL scraper."""
+    """
+    Normalizes raw dicts from the Wellfound Playwright / Apollo-state scraper.
+
+    Accepts two shapes:
+    - Old GraphQL shape: startups=[{name}], locations=[{displayName}]
+    - New Playwright shape: company=str, location=str, jdURL=str, posted_at=ISO
+    """
 
     def normalize(self, raw: dict) -> Optional[Job]:
         try:
             ext_id = str(raw.get("id", "")).strip()
             title = str(raw.get("title", "")).strip()
 
-            startups = raw.get("startups") or [{}]
-            if isinstance(startups, list) and startups:
-                company = str(startups[0].get("name", "")).strip()
-            else:
-                company = str(raw.get("company", "")).strip()
+            # Company: prefer flat "company" field (new), fall back to startups list (old)
+            company = str(raw.get("company", "")).strip()
+            if not company:
+                startups = raw.get("startups") or [{}]
+                if isinstance(startups, list) and startups:
+                    company = str(startups[0].get("name", "")).strip()
 
             if not title or not company:
                 return None
 
-            locations = raw.get("locations") or []
-            if isinstance(locations, list) and locations:
-                location = ", ".join(
-                    str(loc.get("displayName", "")) for loc in locations if loc.get("displayName")
-                )
-            else:
-                location = ""
+            # Location: prefer flat "location" field (new), fall back to locations list (old)
+            location = str(raw.get("location", "")).strip()
+            if not location:
+                locations = raw.get("locations") or []
+                if isinstance(locations, list) and locations:
+                    location = ", ".join(
+                        str(loc.get("displayName", ""))
+                        for loc in locations
+                        if loc.get("displayName")
+                    )
 
             is_remote = bool(raw.get("remote", False))
             if not is_remote and "remote" in location.lower():
@@ -272,12 +282,22 @@ class WellfoundNormalizer:
             description = str(raw.get("description", "") or "")
             description_clean = clean_description(description)
 
-            slug = raw.get("slug", "")
+            # Apply URL: prefer jdURL (new Playwright scraper), then apply_url, then slug
             apply_url = (
-                f"https://wellfound.com/jobs/{slug}"
-                if slug
-                else str(raw.get("apply_url", ""))
+                str(raw.get("jdURL") or raw.get("apply_url") or "")
             )
+            if not apply_url:
+                slug = raw.get("slug", "")
+                apply_url = f"https://wellfound.com/jobs/{slug}" if slug else ""
+
+            # Posted date
+            posted_at = None
+            raw_date = raw.get("posted_at")
+            if raw_date:
+                try:
+                    posted_at = datetime.fromisoformat(str(raw_date))
+                except Exception:
+                    pass
 
             salary_min, salary_max = parse_salary_inr(str(raw.get("compensation", "") or ""))
             emp_type = _parse_employment_type(str(raw.get("jobType", "") or ""))
@@ -293,7 +313,7 @@ class WellfoundNormalizer:
                 description=description,
                 description_clean=description_clean,
                 apply_url=apply_url,
-                posted_at=None,
+                posted_at=posted_at,
                 scraped_at=datetime.utcnow(),
                 platform="wellfound",
                 salary_min=salary_min,

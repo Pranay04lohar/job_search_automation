@@ -259,6 +259,38 @@ def update_scores(
         conn.close()
 
 
+def get_cached_llm_score(content_hash: str) -> Optional[dict]:
+    """
+    Return a cached LLM result for any job with this content_hash that was already
+    scored in a prior run.  Avoids re-calling the LLM API for the same role.
+    Returns None if no valid cached score exists.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT llm_score, llm_verdict, llm_strengths, llm_gaps, llm_one_liner
+            FROM jobs
+            WHERE content_hash = ?
+              AND llm_score IS NOT NULL
+              AND llm_score > 0
+            LIMIT 1
+            """,
+            (content_hash,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "score":     row["llm_score"],
+            "verdict":   row["llm_verdict"] or "skip",
+            "strengths": json.loads(row["llm_strengths"]) if row["llm_strengths"] else [],
+            "gaps":      json.loads(row["llm_gaps"])      if row["llm_gaps"]      else [],
+            "one_liner": row["llm_one_liner"] or "",
+        }
+    finally:
+        conn.close()
+
+
 def mark_alerted(job_id: str) -> None:
     """Mark a job as alerted so it won't be re-sent."""
     conn = get_connection()

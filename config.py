@@ -72,10 +72,10 @@ EXCLUDED_TITLE_KEYWORDS: list[str] = [
 
 # ── Scoring Thresholds ─────────────────────────────────────────────────────────
 KEYWORD_MIN_HITS: int = 1         # Discard jobs with no relevant keywords at all
-SEMANTIC_THRESHOLD: float = 0.33  # Tier 2: keep jobs above this similarity
-LLM_THRESHOLD: float = 0.40       # Tier 3: only LLM-score above this composite
+SEMANTIC_THRESHOLD: float = 0.25  # Tier 2: keep jobs above this similarity
+LLM_THRESHOLD: float = 0.10       # Tier 3: very low floor — semantic gate (0.25) is the real filter
 LLM_ALERT_THRESHOLD: int = 40     # Alert if LLM score >= this (lower = more alerts)
-MAX_LLM_CALLS_PER_RUN: int = 35   # Cost guard
+MAX_LLM_CALLS_PER_RUN: int = 60   # Groq free tier is generous — score up to 60 per run
 
 # Fallback: when LLM produces 0 alerts, alert top N semantic candidates instead
 FALLBACK_COMPOSITE_THRESHOLD: float = 0.42
@@ -134,7 +134,7 @@ LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
 # ── Feature Flags ──────────────────────────────────────────────────────────────
 ENABLE_WELLFOUND: bool = True
-ENABLE_HIRIST: bool = True
+ENABLE_HIRIST: bool = False   # hirist.com API is dead (503); needs Playwright rewrite
 ENABLE_INSTAHYRE: bool = True
 # Naukri direct API scraper (no Selenium/cookies required; uses internal JSON API).
 # Set True once you've confirmed it works for your account region.
