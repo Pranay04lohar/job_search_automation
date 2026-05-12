@@ -53,6 +53,13 @@ SEARCH_TERMS: list[str] = [
 HOURS_OLD: int = 24            # Only jobs from last 24 hours
 RESULTS_PER_TERM: int = 25     # Per platform per search term per location
 
+# ── Experience cap (junior / early-career) ─────────────────────────────────────
+# Drop listings that explicitly require >= this many years minimum experience.
+# Parsed from Job.experience_* fields when present; otherwise title + JD snippet.
+ENABLE_EXPERIENCE_CAP_FILTER: bool = True
+MAX_MIN_EXPERIENCE_YEARS: float = 3.0   # keep roles requiring 0, 1, or 2 years min; drop 3+
+EXPERIENCE_FILTER_STRICT_UNKNOWN: bool = False  # True = drop jobs when exp cannot be parsed
+
 # ── Title-based Exclude Filter ─────────────────────────────────────────────────
 # Jobs whose title contains any of these (case-insensitive) are dropped early.
 EXCLUDED_TITLE_KEYWORDS: list[str] = [
@@ -75,7 +82,7 @@ KEYWORD_MIN_HITS: int = 1         # Discard jobs with no relevant keywords at al
 SEMANTIC_THRESHOLD: float = 0.25  # Tier 2: keep jobs above this similarity
 LLM_THRESHOLD: float = 0.10       # Tier 3: very low floor — semantic gate (0.25) is the real filter
 LLM_ALERT_THRESHOLD: int = 40     # Alert if LLM score >= this (lower = more alerts)
-MAX_LLM_CALLS_PER_RUN: int = 60   # Groq free tier is generous — score up to 60 per run
+MAX_LLM_CALLS_PER_RUN: int = 90   # Raised to 90 — platform-aware selection ensures all platforms are represented
 
 # Fallback: when LLM produces 0 alerts, alert top N semantic candidates instead
 FALLBACK_COMPOSITE_THRESHOLD: float = 0.42

@@ -398,11 +398,53 @@ def run_scoring_pipeline(
         return [j for j, _ in candidates]
 
     # ── Tier 3: LLM scoring ────────────────────────────────────────────────────
-    llm_candidates = [(j, c) for j, c in candidates if c >= llm_threshold]
-    llm_candidates = llm_candidates[:max_llm_calls]
+    # Platform-aware candidate selection: each platform gets a guaranteed minimum
+    # allocation of LLM slots so Naukri/Wellfound/Instahyre are never crowded out
+    # by the sheer volume of LinkedIn/Indeed results.
+    eligible = [(j, c) for j, c in candidates if c >= llm_threshold]
+
+    from collections import defaultdict as _dd
+    platform_groups: dict = _dd(list)
+    for j, c in eligible:
+        platform_groups[j.platform].append((j, c))
+
+    n_platforms = max(1, len(platform_groups))
+    # Each platform gets at least (cap / n_platforms) slots, with remaining filled
+    # by top-composite candidates regardless of platform.
+    per_platform_min = max(5, max_llm_calls // n_platforms)
+
+    llm_candidates: list[tuple] = []
+    seen_ids: set[str] = set()
+
+    # First pass: guaranteed slots per platform (sorted by composite within platform)
+    for platform, group in sorted(platform_groups.items()):
+        for j, c in group[:per_platform_min]:
+            if j.id not in seen_ids:
+                llm_candidates.append((j, c))
+                seen_ids.add(j.id)
+
+    # Second pass: fill remaining cap with top-composite candidates not yet selected
+    for j, c in eligible:
+        if len(llm_candidates) >= max_llm_calls:
+            break
+        if j.id not in seen_ids:
+            llm_candidates.append((j, c))
+            seen_ids.add(j.id)
+
+    # Keep highest composite first so best jobs are scored first
+    llm_candidates.sort(key=lambda x: x[1], reverse=True)
+
+    # Log per-platform breakdown of LLM candidates
+    llm_by_platform: dict[str, int] = {}
+    for j, _ in llm_candidates:
+        llm_by_platform[j.platform] = llm_by_platform.get(j.platform, 0) + 1
+    platform_breakdown = ", ".join(
+        f"{p}:{n}" for p, n in sorted(llm_by_platform.items())
+    )
     log.info(
         f"[LLM] Scoring {len(llm_candidates)} jobs "
-        f"(composite > {llm_threshold}, cap={max_llm_calls})"
+        f"(composite > {llm_threshold}, cap={max_llm_calls}) "
+        f"— by platform: {platform_breakdown}"
     )
 
     if not llm_candidates:
@@ -443,6 +485,9 @@ def run_scoring_pipeline(
             cache_hits += 1
             _log.debug(f"[LLM] Cache hit: {job.title} @ {job.company} (score={result['score']})")
         else:
+            # Small proactive delay to stay within Groq's rate limit (~30 rpm free tier)
+            import time as _t
+            _t.sleep(1.2)
             result = llm_score_job(job, resume_summary)
 
         # If the LLM returned a zero score due to error, count it as a failure.

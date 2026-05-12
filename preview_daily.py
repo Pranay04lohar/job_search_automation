@@ -19,6 +19,7 @@ import time
 import config
 import db
 from pipeline.alerter import TelegramAlerter
+from pipeline.experience_filter import filter_jobs_by_experience
 from pipeline.scorer import llm_score_job
 from pipeline.models import Job
 
@@ -68,6 +69,18 @@ def main() -> None:
     # ── 1. Fetch all good semantic candidates ──────────────────────────────────
     candidates = _fetch_candidates(SEMANTIC_MIN)
     log.info(f"Found {len(candidates)} jobs with semantic score >= {SEMANTIC_MIN}")
+
+    if getattr(config, "ENABLE_EXPERIENCE_CAP_FILTER", True):
+        before_e = len(candidates)
+        candidates, dropped_e = filter_jobs_by_experience(
+            candidates,
+            config.MAX_MIN_EXPERIENCE_YEARS,
+            config.EXPERIENCE_FILTER_STRICT_UNKNOWN,
+        )
+        log.info(
+            f"Experience cap (< {config.MAX_MIN_EXPERIENCE_YEARS} yr min required): "
+            f"dropped {dropped_e} ({len(candidates)} remaining)"
+        )
 
     # ── 2. LLM-score jobs that don't have a valid LLM score yet ───────────────
     needs_llm = [

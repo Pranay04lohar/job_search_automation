@@ -14,6 +14,7 @@ from pathlib import Path
 import config
 import db
 from pipeline.dedup import filter_new_jobs, store_jobs
+from pipeline.experience_filter import filter_jobs_by_experience
 from pipeline.normalizer import normalize_all
 from pipeline.scorer import SemanticMatcher, run_scoring_pipeline
 from pipeline.alerter import TelegramAlerter
@@ -184,6 +185,19 @@ def run_pipeline() -> None:
             ]
             log.info(
                 f"[Filter] Title filter dropped {before - len(jobs)} jobs "
+                f"({len(jobs)} remaining)"
+            )
+
+        if getattr(config, "ENABLE_EXPERIENCE_CAP_FILTER", True):
+            before_exp = len(jobs)
+            jobs, exp_dropped = filter_jobs_by_experience(
+                jobs,
+                config.MAX_MIN_EXPERIENCE_YEARS,
+                config.EXPERIENCE_FILTER_STRICT_UNKNOWN,
+            )
+            log.info(
+                f"[Filter] Experience cap (keep min required < "
+                f"{config.MAX_MIN_EXPERIENCE_YEARS} yr): dropped {exp_dropped} "
                 f"({len(jobs)} remaining)"
             )
 
