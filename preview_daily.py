@@ -29,11 +29,11 @@ logging.basicConfig(
 )
 log = logging.getLogger("preview")
 
-# ── Tuning ─────────────────────────────────────────────────────────────────────
-SEMANTIC_MIN     = 0.28    # Only consider jobs above this semantic composite score
-LLM_CAP          = 90      # Score all candidates — Groq free tier handles this fine
-ALERT_THRESHOLD  = 40      # Alert if LLM score >= this (matches config.LLM_ALERT_THRESHOLD)
-MAX_ALERTS       = 20      # Cap on total Telegram alerts sent
+# ── Tuning — reads from config.py so changes in one place apply everywhere ─────
+SEMANTIC_MIN     = config.SEMANTIC_THRESHOLD        # mirrors config.SEMANTIC_THRESHOLD
+LLM_CAP          = config.MAX_LLM_CALLS_PER_RUN    # mirrors config.MAX_LLM_CALLS_PER_RUN
+ALERT_THRESHOLD  = config.LLM_ALERT_THRESHOLD       # mirrors config.LLM_ALERT_THRESHOLD
+MAX_ALERTS       = 40                               # hard cap on Telegram alerts per preview run
 # ───────────────────────────────────────────────────────────────────────────────
 
 

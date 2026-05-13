@@ -78,10 +78,10 @@ EXCLUDED_TITLE_KEYWORDS: list[str] = [
 ]
 
 # ── Scoring Thresholds ─────────────────────────────────────────────────────────
-KEYWORD_MIN_HITS: int = 1         # Discard jobs with no relevant keywords at all
-SEMANTIC_THRESHOLD: float = 0.25  # Tier 2: keep jobs above this similarity
-LLM_THRESHOLD: float = 0.10       # Tier 3: very low floor — semantic gate (0.25) is the real filter
-LLM_ALERT_THRESHOLD: int = 40     # Alert if LLM score >= this (lower = more alerts)
+KEYWORD_MIN_HITS: int = 2         # Discard jobs with fewer than 2 relevant keywords
+SEMANTIC_THRESHOLD: float = 0.30  # Tier 2: keep jobs above this similarity
+LLM_THRESHOLD: float = 0.10       # Tier 3: very low floor — semantic gate (0.30) is the real filter
+LLM_ALERT_THRESHOLD: int = 60     # Alert if LLM score >= this (raised to reduce alert volume)
 MAX_LLM_CALLS_PER_RUN: int = 90   # Raised to 90 — platform-aware selection ensures all platforms are represented
 
 # Fallback: when LLM produces 0 alerts, alert top N semantic candidates instead
